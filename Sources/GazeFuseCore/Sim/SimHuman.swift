@@ -88,6 +88,10 @@ public final class SimHuman {
     private var motorNoise = Point2.zero
     private var tremor = Point2.zero
     private var nextHeadDecision: TimeSec = 0
+    private struct Submovement { var t0: TimeSec; var duration: TimeSec; var amplitude: Point2; var plannedCursor: Point2; var startCursor: Point2 }
+    private var headSub: Submovement?
+    private var headGainScale = 1.0
+    private var handSub: Submovement?
     private var clenchUntil: TimeSec = -1
     private var clenchDir = Point2.zero
 
@@ -223,9 +227,79 @@ public final class SimHuman {
         }
     }
 
+    /// Minimum-jerk speed profile ds/dτ for τ ∈ [0, 1].
+    @inline(__always) private static func minJerkRate(_ tau: Double) -> Double {
+        guard tau > 0, tau < 1 else { return 0 }
+        return 30 * tau * tau - 60 * tau * tau * tau + 30 * tau * tau * tau * tau
+    }
+
+    private func submovementDuration(error: Double, base: Double, perBit: Double) -> Double {
+        base + perBit * log2(error / max(cfg.webgrid.cellSize, 1) + 1)
+    }
+
     private func stepHead(t: TimeSec, dt: TimeSec) {
         let h = cfg.head
         tremor = simOUStep(tremor, sigma: h.tremorSigma, tau: h.tremorTau, dt: dt, rng: rng)
+        guard h.useSubmovements else { stepHeadContinuous(t: t, dt: dt); return }
+        var voluntary = Point2.zero
+        if let sub = headSub {
+            let tau = (t - sub.t0) / max(sub.duration, 1e-3)
+            if tau >= 1 {
+                headSub = nil
+                nextHeadDecision = t + h.reactionTime
+            } else {
+                voluntary = sub.amplitude * (Self.minJerkRate(tau) / sub.duration)
+            }
+        } else if t >= nextHeadDecision {
+            nextHeadDecision = t + h.controlInterval
+            if hasTarget, let landed = landedAt, !isHandClutched, handEngageAt == nil, t > holdUntil,
+               t > landed + h.postSaccadeAssessDelay,
+               let c = perceived.value(at: t - cfg.decision.perceptionDelay) {
+                let err = targetCenter - c
+                let e = err.length
+                if e > max(h.stopDeadzone, cfg.decision.perceptualThreshold) {
+                    let d = submovementDuration(error: e, base: h.submovementBase, perBit: h.submovementPerBit)
+                    // Feed-forward inverse of the learned pointer mapping: the average rate
+                    // that would cover the distance at constant speed, times the learned scale.
+                    let want = e * h.submovementGain
+                    let rate = min(HeadPointerGain.rate(forSpeed: want / d, config: headGain) * headGainScale, h.maxRate)
+                    var amp = err * (rate * d / e)
+                    amp = amp * (1 + rng.gaussian() * h.motorNoiseFraction) + rng.gaussian2D(sd: h.motorNoiseFraction * 0.3 * amp.length)
+                    if abs(headAngle.x) > h.maxExcursion && amp.x * headAngle.x > 0 { amp.x = 0 }
+                    if abs(headAngle.y) > h.maxExcursion && amp.y * headAngle.y > 0 { amp.y = 0 }
+                    // Gain adaptation from the previous submovement's perceived outcome.
+                    headSub = Submovement(t0: t, duration: d, amplitude: amp, plannedCursor: c + err * h.submovementGain, startCursor: c)
+                }
+            }
+        }
+        let noiseSd = h.motorNoiseFloor
+        motorNoise = simOUStep(motorNoise, sigma: noiseSd, tau: h.motorTau, dt: dt, rng: rng)
+        headRate = voluntary + motorNoise
+        headAngle = headAngle + (headRate + tremor) * dt
+        adaptHeadGain(t: t)
+    }
+
+    private var pendingAdaptation: (start: Point2, planned: Point2, at: TimeSec)?
+    private func adaptHeadGain(t: TimeSec) {
+        // When a submovement has just finished and its effect is visible, compare the
+        // achieved with the planned cursor displacement and nudge the internal gain.
+        if let sub = headSub, pendingAdaptation == nil || pendingAdaptation!.at < sub.t0 {
+            pendingAdaptation = (sub.startCursor, sub.plannedCursor, sub.t0 + sub.duration + cfg.decision.perceptionDelay + 0.05)
+        }
+        guard let pa = pendingAdaptation, headSub == nil, t >= pa.at,
+              let now = perceived.value(at: t - cfg.decision.perceptionDelay) else { return }
+        pendingAdaptation = nil
+        let planned = pa.planned - pa.start, achieved = now - pa.start
+        let pl = planned.length
+        guard pl > 15 else { return }
+        let along = (achieved.x * planned.x + achieved.y * planned.y) / pl
+        guard along > 1 else { return }
+        let ratio = min(max(pl / along, 0.5), 2.0)
+        headGainScale = min(max(headGainScale * pow(ratio, cfg.head.gainAdaptationRate), 0.3), 3.0)
+    }
+
+    private func stepHeadContinuous(t: TimeSec, dt: TimeSec) {
+        let h = cfg.head
         if t >= nextHeadDecision {
             nextHeadDecision = t + h.controlInterval
             var desired = Point2.zero
@@ -254,24 +328,48 @@ public final class SimHuman {
     private func stepHand(t: TimeSec, dt: TimeSec, actions: inout [SimHumanAction]) {
         let hc = cfg.hand
         if !isHandClutched, handEngageAt == nil, hasTarget, let landed = landedAt, t > holdUntil, clickOnsetAt == nil,
-           t - hc.reactionTime > landed + cfg.head.postSaccadeAssessDelay,
+           headSub == nil, t - hc.reactionTime > landed + cfg.head.postSaccadeAssessDelay,
            let c = perceived.value(at: t - hc.reactionTime) {
             let err = (targetCenter - c).length
             if err < bestError * hc.stallImprovementFraction { bestError = err; bestErrorTime = t }
-            if err > hc.stopDeadzone + cfg.decision.perceptualThreshold {
+            // Engage only if the cursor is visibly off target (otherwise just click).
+            if !targetRect.contains(c) && err > hc.stopDeadzone + cfg.decision.perceptualThreshold {
                 let stalled = !cfg.headEnabled || (t - bestErrorTime > hc.engageAfterStall)
                 if stalled { handEngageAt = t + hc.engageLatency }
             }
         }
         if let ea = handEngageAt, t >= ea {
             isHandClutched = true; handEngageAt = nil; nextHandDecision = t; lastHandFrame = t; handVelocity = .zero
+            handSub = nil
         }
         guard isHandClutched else { return }
-        if t >= nextHandDecision {
+        if hc.useSubmovements {
+            if let sub = handSub {
+                let tau = (t - sub.t0) / max(sub.duration, 1e-3)
+                if tau >= 1 { handSub = nil; handVelocity = .zero; nextHandDecision = t + hc.reactionTime }
+                else { handVelocity = sub.amplitude * (Self.minJerkRate(tau) / sub.duration) }
+            } else if t >= nextHandDecision, handReleaseAt == nil {
+                nextHandDecision = t + hc.controlInterval
+                if let c = perceived.value(at: t - cfg.decision.perceptionDelay) {
+                    let err = targetCenter - c
+                    // Release once the cursor is comfortably inside the target.
+                    let inner = ScreenRect(x: targetRect.origin.x + targetRect.width * 0.15, y: targetRect.origin.y + targetRect.height * 0.15,
+                                           width: targetRect.width * 0.7, height: targetRect.height * 0.7)
+                    if inner.contains(c) || err.length < hc.stopDeadzone {
+                        handReleaseAt = t + hc.releaseLatency
+                    } else {
+                        let d = submovementDuration(error: err.length, base: hc.submovementBase, perBit: hc.submovementPerBit)
+                        var amp = err * hc.submovementGain
+                        amp = amp * (1 + rng.gaussian() * hc.motorNoiseFraction) + rng.gaussian2D(sd: hc.motorNoiseFraction * 0.3 * amp.length)
+                        handSub = Submovement(t0: t, duration: d, amplitude: amp, plannedCursor: c + amp, startCursor: c)
+                    }
+                }
+            }
+        } else if t >= nextHandDecision {
             nextHandDecision = t + hc.controlInterval
             if let c = perceived.value(at: t - hc.reactionTime) {
                 let err = targetCenter - c
-                if err.length < hc.stopDeadzone {
+                if err.length < hc.stopDeadzone || targetRect.contains(c) {
                     handVelocity = .zero
                     if handReleaseAt == nil { handReleaseAt = t + hc.releaseLatency }
                 } else {
@@ -286,8 +384,15 @@ public final class SimHuman {
             lastHandFrame = t
         }
         if let r = handReleaseAt, t >= r {
-            isHandClutched = false; handReleaseAt = nil; handVelocity = .zero
+            isHandClutched = false; handReleaseAt = nil; handVelocity = .zero; handSub = nil
             bestError = .infinity; bestErrorTime = t
+            // Take-off selection: the release itself is the click when on target.
+            if hc.releaseClicks, hasTarget, clickOnsetAt == nil, t > awaitingUntil,
+               let c = perceived.value(at: t - cfg.decision.perceptionDelay), targetRect.contains(c) {
+                clickOnsetAt = t
+                lastClickDecision = t
+                insideSince = nil
+            }
         }
     }
 
@@ -308,7 +413,7 @@ public final class SimHuman {
             }
         }
         guard hasTarget, clickOnsetAt == nil, t > awaitingUntil, !isHandClutched, handEngageAt == nil,
-              landedAt != nil, saccade == nil else { return }
+              headSub == nil, landedAt != nil, saccade == nil else { return }
         let tp = t - d.perceptionDelay
         if let cur = perceived.value(at: tp), targetRect.contains(cur) {
             if insideSince == nil { insideSince = tp }

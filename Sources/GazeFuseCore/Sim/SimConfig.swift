@@ -147,6 +147,18 @@ public struct SimHeadConfig: Codable, Equatable {
     /// White noise on the unused user-acceleration axes (g), retained so the
     /// emitted HeadMotionSample resembles a complete CoreMotion sample.
     public var userAccelerationNoiseSigma: Double = 0.005
+    /// Intermittent submovement controller (Meyer et al. 1988; Crossman & Goodeve 1983):
+    /// each correction is a discrete minimum-jerk head rotation planned from the
+    /// perceived error, lasting base + perBit·log2(err/cell + 1) seconds, aimed at
+    /// `submovementGain` of the error, with signal-dependent endpoint noise
+    /// (`motorNoiseFraction` of the amplitude). After it ends the user waits
+    /// `reactionTime` to see the result before planning the next one.
+    public var useSubmovements: Bool = true
+    public var submovementBase: Double = 0.15
+    public var submovementPerBit: Double = 0.07
+    public var submovementGain: Double = 0.95
+    /// Rate at which the user re-learns the head→cursor gain from each submovement (0…1).
+    public var gainAdaptationRate: Double = 0.4
     public init() {}
 }
 
@@ -169,6 +181,14 @@ public struct SimHandConfig: Codable, Equatable {
     public var stallImprovementFraction: Double = 0.85
     public var releaseLatency: Double = 0.10
     public var stopDeadzone: Double = 6
+    /// Submovement model for the clutched hand (see SimHeadConfig).
+    public var useSubmovements: Bool = true
+    public var submovementBase: Double = 0.12
+    public var submovementPerBit: Double = 0.06
+    public var submovementGain: Double = 0.95
+    /// "Take-off" selection (Potter et al. 1988): releasing the clutch inside the
+    /// target is the click. The app implements this as pinch-hold → adjust → release.
+    public var releaseClicks: Bool = true
     public init() {}
 }
 
