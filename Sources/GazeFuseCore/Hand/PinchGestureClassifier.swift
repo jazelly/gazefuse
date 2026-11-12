@@ -46,7 +46,8 @@
 // Optional per-user adaptation (`adaptiveThresholds`, default off) keeps a slow running
 // estimate of the open-hand distance (while idle and clearly open) and of the pinched
 // distance (while held) and places the on/off thresholds at fixed fractions of that gap,
-// clamped to a safe range. Useful when the camera angle makes touching fingertips look
+// clamped to a safe range. Near-miss learning (see Config) also learns from attempted pinches
+// that did not reach the threshold. Useful when the camera angle makes touching fingertips look
 // further apart than the fixed defaults expect.
 //
 // All thresholds in hand-size units are relative to `HandGestureFeatures.handSize`
@@ -132,6 +133,20 @@ public final class PinchGestureClassifier: HandGestureClassifying {
         /// (on is clamped to 0.12...0.42, off to on + 0.08 ... 0.7).
         public var adaptiveOnFraction: Double = 0.2
         public var adaptiveOffFraction: Double = 0.35
+        /// Near-miss learning: an idle dip of the thumb–index distance that falls below
+        /// `nearMissDepth` × open distance (with tip-nearest / not-curled pose at its minimum),
+        /// lasts `nearMissMinDuration...nearMissMaxDuration` and returns to open without
+        /// triggering is treated as an attempted pinch; the median of the last such minima pulls
+        /// the pinched-distance estimate up. Fixes the chicken-and-egg problem of learning only
+        /// from pinches that were already detected.
+        public var nearMissLearning: Bool = true
+        /// Extra onset frames required while the adapted on-threshold is above the fixed default.
+        public var adaptiveExtraOnFrames: Int = 0
+        public var nearMissDepth: Double = 0.5
+        public var nearMissMinDuration: Double = 0.05
+        public var nearMissMaxDuration: Double = 1.0
+        public var nearMissMinCount: Int = 2
+        public var nearMissRate: Double = 0.6
 
         // MARK: open-palm clutch
         /// Consecutive open-palm frames before `isOpenPalm` becomes true.
@@ -229,6 +244,10 @@ public final class PinchGestureClassifier: HandGestureClassifying {
     private var lastPalmCenter: Point2?
     private var openEstimate = 1.0
     private var pinchedEstimate = 0.1
+    private var dipStart: Double?
+    private var dipMin = Double.infinity
+    private var dipMinPoseOK = false
+    private var nearMisses: [Double] = []
     private var openPalmFrames = 0
 
     public init(config: Config = Config()) {
@@ -320,6 +339,8 @@ public final class PinchGestureClassifier: HandGestureClassifying {
         lastMotionRef = nil
         openEstimate = 1.0
         pinchedEstimate = 0.1
+        dipStart = nil; dipMin = .infinity; dipMinPoseOK = false
+        nearMisses.removeAll()
         openPalmFrames = 0
     }
 
@@ -345,6 +366,9 @@ public final class PinchGestureClassifier: HandGestureClassifying {
            p.confidence >= config.minOnsetConfidence { middleArmed = true }
         if config.adaptiveThresholds, let d = dIdx, d > off + 0.15 {
             openEstimate += config.adaptiveOpenRate * (d - openEstimate)
+        }
+        if config.adaptiveThresholds, config.nearMissLearning, let d = dIdx {
+            trackNearMiss(d: d, features: f, on: on, t: t)
         }
         guard presenceFrames >= config.minPresenceFrames, t >= refractoryUntil,
               handSpeed <= config.maxOnsetHandSpeed else {
@@ -394,7 +418,11 @@ public final class PinchGestureClassifier: HandGestureClassifying {
             candidateFrames = candidate == nil ? 0 : 1
             candidateStartT = t
         }
-        guard let b = candidate, candidateFrames >= max(1, config.minOnFrames) else { return }
+        // A widened (adapted) on-threshold sits closer to ordinary finger motion: demand one
+        // more consecutive frame of evidence before committing.
+        let widened = config.adaptiveThresholds && activeThresholds.on > config.pinchOnDistance + 1e-9
+        let needFrames = max(1, config.minOnFrames) + (widened ? config.adaptiveExtraOnFrames : 0)
+        guard let b = candidate, candidateFrames >= needFrames else { return }
 
         // Start the pinch.
         indexArmed = false; middleArmed = false
@@ -410,12 +438,42 @@ public final class PinchGestureClassifier: HandGestureClassifying {
         releaseFrames = 0
         dropoutFrames = 0
         clearCandidate()
+        dipStart = nil
         if config.scrollEnabled && b == .left {
             phase = .pending
         } else {
             phase = .held
             events.append(InputEvent(t: onsetT, source: .hand, kind: .down, button: b, confidence: onsetConfidence))
         }
+    }
+
+    private func trackNearMiss(d: Double, features f: HandGestureFeatures, on: Double, t: TimeSec) {
+        let enter = config.nearMissDepth * openEstimate
+        let exit = 0.6 * openEstimate
+        if dipStart == nil {
+            if d < enter { dipStart = t; dipMin = .infinity }
+            else { return }
+        }
+        if d < dipMin {
+            dipMin = d
+            var ok = true
+            if config.requireTipNearest, let p = f.index {
+                if let dip = indexDipSmoother.value ?? p.dipDistance, dip < d { ok = false }
+                if let pip = p.pipDistance, pip < d { ok = false }
+            }
+            if config.vetoCurledFinger, min(f.indexCurl ?? 1, smoothedIndexCurl ?? 1) <= config.features.curledCurlRatio { ok = false }
+            dipMinPoseOK = ok
+        }
+        guard d > exit, let start = dipStart else { return }
+        let duration = t - start
+        dipStart = nil
+        guard dipMinPoseOK, dipMin >= on, duration >= config.nearMissMinDuration,
+              duration <= config.nearMissMaxDuration else { return }
+        nearMisses.append(dipMin)
+        if nearMisses.count > 5 { nearMisses.removeFirst() }
+        guard nearMisses.count >= max(1, config.nearMissMinCount) else { return }
+        let median = nearMisses.sorted()[nearMisses.count / 2]
+        if median > pinchedEstimate { pinchedEstimate += config.nearMissRate * (median - pinchedEstimate) }
     }
 
     private func heldStep(features f: HandGestureFeatures, palm: Point2, dIdx: Double?, dMid: Double?,

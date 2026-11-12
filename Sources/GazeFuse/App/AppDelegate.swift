@@ -68,6 +68,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let drag = item("Pinch: press / drag (mouse down-up)", #selector(setPinchMode(_:))); drag.representedObject = "pressDrag"
         let scr = item("Pinch: press / drag / vertical-move scroll", #selector(setPinchMode(_:))); scr.representedObject = "pressDragScroll"
         ch.addItem(take); ch.addItem(drag); ch.addItem(scr)
+        ch.addItem(.separator())
+        ch.addItem(item("Adaptive pinch thresholds (learns your pinch)", #selector(toggleAdaptivePinch(_:))))
         let chItem = NSMenuItem(title: "Input Channels", action: nil, keyEquivalent: ""); chItem.submenu = ch
         m.addItem(chItem)
         m.addItem(item("Show / Hide HUD   ⌃⌥H", #selector(toggleHUD)))
@@ -163,6 +165,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             default: break
             }
         }
+    }
+
+    @objc private func toggleAdaptivePinch(_ sender: NSMenuItem) {
+        sender.state = sender.state == .on ? .off : .on
+        let on = sender.state == .on
+        engine.queue.async { self.engine.handClassifier.config.adaptiveThresholds = on }
     }
 
     @objc private func setPinchMode(_ sender: NSMenuItem) {

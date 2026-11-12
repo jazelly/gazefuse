@@ -44,8 +44,8 @@ final class HandPinchClassifierTests: XCTestCase {
 
     /// Everything except pinches: waving / wiggling fingers, fast sweeps with motion blur,
     /// fists, leaving and re-entering, partial occlusion, relaxed hands.
-    private func nonPinchScenario(seed: UInt64, rounds: Int = 40) -> HandTestScenario {
-        let s = HandTestScenario(seed: seed)
+    private func nonPinchScenario(seed: UInt64, rounds: Int = 40, appendingTo existing: HandTestScenario? = nil) -> HandTestScenario {
+        let s = existing ?? HandTestScenario(seed: seed)
         s.dropProb = 0.02
         s.randomizePlacement()
         for r in 0..<rounds {
@@ -554,9 +554,8 @@ final class HandPinchClassifierTests: XCTestCase {
 
         _ = adaptiveScenario
         XCTAssertLessThan(fixed.recall, 0.7)
-        // Adaptive thresholds are EXPERIMENTAL (default off): today they recover only part of
-        // the misses on this hard fixture. Require that they never make things worse.
-        XCTAssertGreaterThanOrEqual(adaptive.recall, fixed.recall)
+        // Near-miss learning lets adaptive mode learn from the pinches it *missed*.
+        XCTAssertGreaterThanOrEqual(adaptive.recall, 0.85)
         XCTAssertGreaterThanOrEqual(adaptive.precision, 0.95)
         // Normal user: adaptive mode must not degrade.
         let normal = HandTestEvaluator.evaluate(tapScenario(seed: 701, count: 40), classifier: PinchGestureClassifier(config: cfg))
@@ -565,6 +564,32 @@ final class HandPinchClassifierTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(normal.precision, 0.975)
         let np = HandTestEvaluator.evaluate(nonPinchScenario(seed: 702, rounds: 20), classifier: PinchGestureClassifier(config: cfg))
         XCTAssertEqual(np.falsePositives, 0, "adaptive mode must not add false positives on non-pinch motion")
+    }
+
+    func testAdaptiveNearMissLearningAcrossUsers() {
+        // Several "wide contact" users (camera angle hides the contact) and seeds.
+        var lines: [String] = []
+        var fixedTP = 0, adaptTP = 0, total = 0, adaptFP = 0
+        for gap in [0.30, 0.34, 0.38] {
+            for seed: UInt64 in [710, 711, 712] {
+                let fixed = HandTestEvaluator.evaluate(tapScenario(seed: seed, count: 40, contactGap: gap), classifier: PinchGestureClassifier())
+                var cfg = PinchGestureClassifier.Config(); cfg.adaptiveThresholds = true
+                // Same classifier keeps adapting, then sees a long block of non-pinch motion.
+                let sc = nonPinchScenario(seed: seed, rounds: 12, appendingTo: tapScenario(seed: seed, count: 40, contactGap: gap))
+                let adaptive = HandTestEvaluator.evaluate(sc, classifier: PinchGestureClassifier(config: cfg))
+                fixedTP += fixed.truePositives; adaptTP += adaptive.truePositives; total += fixed.episodes
+                adaptFP += adaptive.falsePositives
+                lines.append(String(format: "gap %.2f seed %d: fixed recall %.3f | adaptive recall %.3f precision %.3f FP %d",
+                                    gap, seed, fixed.recall, adaptive.recall, adaptive.precision, adaptive.falsePositives))
+            }
+        }
+        lines.forEach { print("near-miss: " + $0) }
+        print(String(format: "near-miss aggregate: fixed recall %.3f -> adaptive recall %.3f over %d taps, adaptive FP %d (incl. non-pinch blocks)",
+                     Double(fixedTP) / Double(total), Double(adaptTP) / Double(total), total, adaptFP))
+        XCTAssertGreaterThan(Double(adaptTP) / Double(total), 0.8)
+        // A wave that opens only to 0.45 is close to a 0.38 "contact" — inherently ambiguous for
+        // a widened threshold. Keep the budget explicit: ≤ 3 FP over 9 × 12 non-pinch rounds.
+        XCTAssertLessThanOrEqual(adaptFP, 3)
     }
 
     // MARK: - Open-palm clutch

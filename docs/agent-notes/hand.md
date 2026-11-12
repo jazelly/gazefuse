@@ -158,3 +158,19 @@ or Webgrid BPS. No shared-contract change is required for the current integratio
 
 Files are left uncommitted for the integrator as requested by the resumed-task
 instructions; shared git metadata was not modified.
+
+## Iteration 2: near-miss learning for adaptive thresholds
+
+The old adaptive mode only learned the pinched distance from pinches it had already detected
+(chicken-and-egg), so a "wide contact" user (camera angle makes touching tips look 0.32 hand-sizes
+apart) went from recall 0.183 (fixed) to only 0.317. Near-miss learning treats an idle dip of the
+thumb–index distance below 0.5 × open distance, with tip-nearest / not-curled pose at its minimum,
+lasting 0.05–1.0 s and returning to open without a trigger, as an attempted pinch; the median of
+the last ≤5 such minima pulls the pinched estimate up (after ≥2 near misses).
+
+* wide contact 0.32, 60 taps: fixed recall 0.183 → adaptive 0.317 (old) → **0.933** (precision 1.000).
+* 3 contact gaps (0.30/0.34/0.38) × 3 seeds × 40 taps, each followed by 12 rounds of non-pinch
+  motion in the same stream: fixed recall 0.250 → adaptive **0.947**, adaptive FP 3 (all in "wave"
+  segments whose finger aperture only opens to 0.45 — inherently close to a 0.38 "contact").
+* Normal users with adaptive on: recall 1.000, precision 1.000; non-pinch suite 0 FP.
+* Still default **off**; menu: Input Channels → "Adaptive pinch thresholds".
