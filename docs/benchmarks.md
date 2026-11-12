@@ -44,8 +44,8 @@ Reproduce: `swift build -c release --disable-sandbox && .build/out/Products/Rele
   it only clicks once the cursor it *sees* has settled inside the inner 60% of the target.
   Webgrid score = `max(log2(N²−1) · NTPM / 60, 0)` exactly like neuralink.com/webgrid.
 * `mouseLike` is the same simulated human driving a near-perfect pointer — a *sanity ceiling for the
-  simulator*, not a measurement of a real mouse (real able-bodied mouse users score ~8–10 BPS on
-  the 35×35 Webgrid; Neuralink reports its participants at ~8–10 BPS).
+  simulator*, not a measurement of a real mouse (Neuralink has publicly cited roughly 10 BPS for able-bodied
+  mouse users and high-single-digit BPS for its BCI participants — check neuralink.com/webgrid for current figures).
 * Gaze alone scores 0 because the uncorrected webcam calibration bias (~60–75 pt at "typical") is larger than
   the cells and the simulated operator does **not** use a deliberate "look-beside-the-target" strategy;
   real users partly can, so treat gaze-only numbers as a lower bound. The point of the project is that
