@@ -1,0 +1,93 @@
+{
+  "arbiter" : {
+    "clickMaxDuration" : 0.3,
+    "clickMaxTravel" : 12,
+    "duplicateWindow" : 0.3,
+    "dwellMinConfidence" : 0.5,
+    "handMinConfidence" : 0.5,
+    "jawMinConfidence" : 0.6,
+    "keyboardMinConfidence" : 0,
+    "minInterval" : 0.15,
+    "onsetLookback" : 0.007612004746771289,
+    "simulatedMinConfidence" : 0
+  },
+  "direct" : {
+    "gazeTimeout" : 0.5,
+    "head" : {
+      "accelExponent" : 0.5,
+      "accelReferenceRate" : 0.15,
+      "deadbandRadPerSec" : 0.02,
+      "enabled" : false,
+      "maxSpeedPointsPerSec" : 3000,
+      "pitchAxis" : 0,
+      "pitchSign" : -1,
+      "pointsPerRadian" : 1500,
+      "source" : "rotationRate",
+      "timeout" : 0.25,
+      "velocitySigma" : 10,
+      "yawAxis" : 1,
+      "yawSign" : -1
+    },
+    "historyCapacity" : 512,
+    "minGazeConfidence" : 0.2,
+    "offsetResetJump" : 120,
+    "oneEuro" : {
+      "beta" : 0.01,
+      "dCutoff" : 1,
+      "minCutoff" : 1
+    }
+  },
+  "fusion" : {
+    "adaptiveGazeNoise" : true,
+    "adaptiveNoiseAlpha" : 0.02,
+    "adaptiveNoiseMaxSigma" : 120,
+    "biasCorrelationLength" : 3822.4684852111154,
+    "biasPriorSigma" : 12.86956544984867,
+    "biasProcessSigma" : 24.57122012054522,
+    "confidenceScalePoints" : 120,
+    "dragModeHold" : 0.15,
+    "gazeSigmaPoints" : 21.436237910520404,
+    "gazeTimeout" : 0.5,
+    "head" : {
+      "accelExponent" : 0,
+      "accelReferenceRate" : 0.15,
+      "deadbandRadPerSec" : 0.011578583122969987,
+      "enabled" : true,
+      "maxSpeedPointsPerSec" : 3000,
+      "pitchAxis" : 0,
+      "pitchSign" : -1,
+      "pointsPerRadian" : 1456.4806270275008,
+      "source" : "rotationRate",
+      "timeout" : 0.25,
+      "velocitySigma" : 2.336905335399069,
+      "yawAxis" : 1,
+      "yawSign" : -1
+    },
+    "headAccelerationSigma" : 19187.11728264056,
+    "historyCapacity" : 512,
+    "leak" : {
+      "enabled" : true,
+      "forgetting" : 0.998,
+      "maxInnovation" : 250,
+      "maxLeakFraction" : 0.9,
+      "priorRad2" : 0.002,
+      "referenceTau" : 20,
+      "settleTime" : 0.15
+    },
+    "minGazeConfidence" : 0.2,
+    "positionProcessSigma" : 0.908594132060615,
+    "relativeDeltaSigma" : 1,
+    "reorderWindow" : 0.2,
+    "saccadeClusterSigmas" : 4.283524770384036,
+    "saccadeConfirmSamples" : 1,
+    "saccadeConfirmWindow" : 0.12,
+    "saccadeGateNIS" : 30,
+    "saccadeMaxWindow" : 8,
+    "saccadeMinConfidence" : 0.6,
+    "saccadeMinJumpPoints" : 12.293616590081577,
+    "saccadeModeDuration" : 0.15,
+    "saccadeWindowGateNIS" : 37.08397066296918,
+    "stateMargin" : 100,
+    "velocityDecayTau" : 1
+  }
+}
