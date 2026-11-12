@@ -63,6 +63,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                              ("AirPods jaw-clench click", "jaw")] {
             let it = item(title, #selector(toggleChannel(_:))); it.representedObject = key; it.state = .on; ch.addItem(it)
         }
+        ch.addItem(.separator())
+        let take = item("Pinch: hold = adjust, release = click", #selector(setPinchMode(_:))); take.representedObject = "takeOff"; take.state = .on
+        let drag = item("Pinch: press / drag (mouse down-up)", #selector(setPinchMode(_:))); drag.representedObject = "pressDrag"
+        ch.addItem(take); ch.addItem(drag)
         let chItem = NSMenuItem(title: "Input Channels", action: nil, keyEquivalent: ""); chItem.submenu = ch
         m.addItem(chItem)
         m.addItem(item("Show / Hide HUD   ⌃⌥H", #selector(toggleHUD)))
@@ -158,6 +162,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             default: break
             }
         }
+    }
+
+    @objc private func setPinchMode(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let mode = Engine.PinchMode(rawValue: raw) else { return }
+        sender.menu?.items.filter { ($0.representedObject as? String).flatMap(Engine.PinchMode.init) != nil }.forEach { $0.state = .off }
+        sender.state = .on
+        engine.queue.async { self.engine.pinchMode = mode; self.engine.output.releaseAll() }
     }
 
     @objc private func toggleHUD() { hud.toggle() }
