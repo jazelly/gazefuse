@@ -311,6 +311,7 @@ public struct SimConfig: Codable, Equatable {
             c.cursorMode = .ekf; c.headEnabled = true; c.handAdjustEnabled = true; c.compensatoryGaze = false
         }
         c.tuning.fusion.head.enabled = c.headEnabled
+        c.tuning.fusion.handCorrectionEnabled = c.handAdjustEnabled
         c.tuning.direct.head.enabled = c.headEnabled
         c.applyNoise(noise)
         return c

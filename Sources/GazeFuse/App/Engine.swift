@@ -111,6 +111,7 @@ final class Engine {
     private func tick() {
         let t = CACurrentMediaTime()
         stats.fps = camera.fps
+        fusion.config.handCorrectionEnabled = channels.hand && channels.handFineAdjust
         let st = fusion.cursor(at: t)
         stats.cursor = st.position; stats.mode = st.mode.rawValue
         if tracking && calibrationSink == nil && t >= physicalMousePauseUntil && st.mode != .idle {

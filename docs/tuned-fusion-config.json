@@ -50,6 +50,7 @@
     "gazeOnlyPositionProcessSigma": 20.0,
     "gazeSigmaPoints": 21.436237910520404,
     "gazeTimeout": 0.5,
+    "handCorrectionEnabled": false,
     "head": {
       "accelExponent": 0,
       "accelReferenceRate": 0.15,

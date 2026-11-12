@@ -79,6 +79,9 @@ public struct EKFCursorFusionConfig: Codable, Equatable {
     /// operation): the cursor must then follow small compensatory gaze shifts itself, whereas
     /// with head/hand correction a near-zero `positionProcessSigma` is optimal. 0 = unchanged.
     public var gazeOnlyPositionProcessSigma: Double = 20
+    /// Set when the hand fine-adjust channel is enabled: hand clutches are intermittent, so
+    /// gaze-only mode is then never entered (simulation: entering it cost ~0.2–0.3 BPS).
+    public var handCorrectionEnabled: Bool = false
     /// EMA weight of the innovation-variance estimate per accepted sample.
     public var adaptiveNoiseAlpha: Double = 0.02
     /// Upper bound for σ̂ (pt).
@@ -332,8 +335,7 @@ public final class EKFCursorFusion: CursorFusing {
 
         // Normal update. The same current-state measurement function is used for
         // in-order and late samples; see the OOSM note above.
-        let lastCorrection = max(lastHeadTime ?? -.infinity, lastHandTime ?? -.infinity)
-        let biasUnobservable = cfg.biasObservabilityWindow > 0 && t - lastCorrection > cfg.biasObservabilityWindow
+        let biasUnobservable = isGazeOnlyMode(at: t)
         ekf.update(z: [z.x, z.y], H: Self.Hgaze, R: .diagonal([r, r]),
                    consider: biasUnobservable ? [Self.BX, Self.BY] : [])
         clampState()
@@ -492,6 +494,14 @@ public final class EKFCursorFusion: CursorFusing {
         clampState()
     }
 
+    /// No correction channel enabled/active: the gaze bias is unobservable.
+    public func isGazeOnlyMode(at t: TimeSec) -> Bool {
+        let cfg = config
+        guard cfg.biasObservabilityWindow > 0, !cfg.handCorrectionEnabled else { return false }
+        let lastCorrection = max(lastHeadTime ?? -.infinity, lastHandTime ?? -.infinity)
+        return t - lastCorrection > cfg.biasObservabilityWindow
+    }
+
     private func predictStep(_ dt: TimeSec) {
         let d = min(max(dt, 0), 1.0)
         guard d > 0 else { return }
@@ -503,9 +513,7 @@ public final class EKFCursorFusion: CursorFusing {
         F[Self.VX, Self.VX] = a; F[Self.VY, Self.VY] = a
         F[Self.BX, Self.VX] = -c; F[Self.BY, Self.VY] = -c
         let qa = cfg.headAccelerationSigma * cfg.headAccelerationSigma
-        let lastCorrection = max(lastHeadTime ?? -.infinity, lastHandTime ?? -.infinity)
-        let gazeOnly = cfg.biasObservabilityWindow > 0 && cfg.gazeOnlyPositionProcessSigma > 0 &&
-            filterTime - lastCorrection > cfg.biasObservabilityWindow
+        let gazeOnly = cfg.gazeOnlyPositionProcessSigma > 0 && isGazeOnlyMode(at: filterTime)
         let ps = gazeOnly ? max(cfg.positionProcessSigma, cfg.gazeOnlyPositionProcessSigma) : cfg.positionProcessSigma
         let qx = ps * ps * d
         // Unobservable bias: do not let its variance grow either (it would only dilute the
