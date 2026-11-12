@@ -49,6 +49,7 @@
 - **Gaze = coarse, fast pointing** (MAGIC pointing, Zhai et al. 1999; Apple Vision Pro "look"). Webcam gaze is accurate to a few degrees at best, i.e. tens of points on a laptop, so it cannot hit a 30×30 Webgrid cell (~30 pt) alone.
 - **Head motion = fine, precise relative correction.** AirPods attitude is low-noise and relative; the EKF treats it as a velocity input and absorbs the gaze/cursor disagreement into a slowly varying gaze-bias state, so the eyes can stay on the target while the head nudges the cursor.
 - **Pinch = click** (Vision Pro "look and tap"). The arbiter places the click at the fused cursor position from just *before* gesture onset, cancelling the gaze/cursor jitter that the gesture itself causes. Jaw clench is an alternative hands-free click.
+- **Pinch modes.** Default *take-off* (Potter et al. 1988): pinch-and-hold is a clutch — hand motion fine-adjusts the cursor (EKF relative correction moving position and gaze bias in opposite directions) — and the *release* is the left click; a quick tap is just a click. *Press/drag* mode maps pinch to mouse-down/up for drag-and-drop. Selectable in the menu bar.
 - Touching the physical mouse/trackpad pauses control (synthetic events are tagged via `eventSourceUserData`).
 
 ## Recording / replay
