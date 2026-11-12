@@ -238,3 +238,10 @@ on the actual AirPods fit is the next step before enabling real cursor clicks.
 - [TeethTap, 2021](https://arxiv.org/abs/2102.12548): custom earpiece IMUs plus contact microphones for discrete teeth gestures. Its hardware and recognition results do not transfer to this detector.
 - [Rupavatharam and Gruteser, Towards In-Ear Inertial Jaw Clenching Detection, EarComp 2019](https://www.esense.io/earcomp/EarComp-PreACM.pdf): eSense gyro-magnitude peaks/dips establish an inertial sensing precedent; this branch instead uses acceleration energy with gyro veto.
 - [Earables for Detection of Bruxism: a Feasibility Study, 2021](https://arxiv.org/abs/2108.04144): eSense inertial data with nuisance activities; a different classification problem and protocol, not evidence of short AirPods click reliability.
+
+## Iteration 2: early commit
+
+`JawClenchDetector.Config.earlyCommitEnabled` (default on): commit after 60 ms of burst at ≥1.25× threshold if the prior
+0.6 s was quiet and |ω| ≤ 0.08 rad/s before and during the burst. Mixed 150 s stream: F1 0.909 → 0.909, mean latency
+0.440 → 0.120 s, p90 0.552 → 0.251 s; 8-seed F1 0.905 → 0.905. Without the head-still gate F1 dropped to 0.870.
+Off automatically when double-clench is enabled. Sweep: `GF_SWEEP=1 swift test --filter testZZJawSweep`.

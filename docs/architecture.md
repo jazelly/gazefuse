@@ -26,8 +26,8 @@
 
 | Target | Contents |
 | --- | --- |
-| `GazeFuseCore` | `Interfaces.swift` (shared contract), `Math/Matrix`, `Filters/` (One Euro, generic EKF, CV-KF), `Gaze/` (ridge calibration, calibration plans), `Hand/` (pinch classifier, hand features), `Motion/` (jaw-clench detector, head-pose tracker), `Fusion/` (EKF cursor fusion, baseline, click arbiter, tuning), `Recording/` (JSONL format), `Sim/` (Webgrid simulator, simulated user, tuner, replay). No AppKit/AVFoundation/Vision/CoreMotion. |
-| `GazeFuse` (app) | Menu-bar app: `App/` (AppDelegate, Engine, CameraPipeline, CursorOutput, OverlayHUD), `Gaze/` (Vision face extractor, calibration window), `Hand/` (Vision hand-pose extractor), `Motion/` (CMHeadphoneMotionManager source). |
+| `GazeFuseCore` | `Interfaces.swift` (shared contract), `Math/Matrix`, `Filters/` (One Euro, generic EKF, CV-KF), `Gaze/` (ridge calibration with optional appearance head, calibration plans, Timm–Barth `PupilLocator`), `Hand/` (pinch classifier, hand features), `Motion/` (jaw-clench detector, head-pose tracker), `Fusion/` (EKF cursor fusion, baseline, click arbiter, tuning), `Recording/` (JSONL format), `Sim/` (Webgrid simulator, simulated user, tuner, replay). No AppKit/AVFoundation/Vision/CoreMotion. |
+| `GazeFuse` (app) | Menu-bar app: `App/` (AppDelegate, Engine, CameraPipeline, CursorOutput, OverlayHUD), `Gaze/` (Vision face extractor + Timm–Barth refinement, `AppearanceGazeEstimator` (VNCoreMLRequest, optional user-converted model), calibration window), `App/VideoSelfTest` (`--gaze-video`), `Hand/` (Vision hand-pose extractor), `Motion/` (CMHeadphoneMotionManager source). |
 | `gazefuse-bench` | CLI: Webgrid simulation, parameter tuning, replay of recordings. |
 | `GazeFuseCoreTests` | XCTest suites for every core module. |
 

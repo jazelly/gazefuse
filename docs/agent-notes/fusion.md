@@ -239,3 +239,16 @@ in the benchmark artifact.
 * Simulated gazeHeadEKF/typical/30×30: 0 → 2.02 → 2.67 → 3.38 → 3.79 → 5.32 BPS (20 seeds from 3000). See docs/benchmarks.md.
 * Regression gate test: `FusionLeakAdaptiveTests.testSimulatorRegressionGate` (typical > 4 BPS, acc > 0.9).
 * Saccade `confirmSamples` 1 beats 2 by ~0.7 BPS in simulation; 2 may be more robust to real outliers.
+
+## Iteration 2: gaze-only mode
+
+* `isGazeOnlyMode`: no head/hand correction for `biasObservabilityWindow` (2 s) and `handCorrectionEnabled == false`
+  (Engine sets it from the hand + fine-adjust channels; the sim from the preset). Then: bias = Schmidt-Kalman consider
+  state (`ExtendedKalmanFilter.update(consider:)`), Q_b = 0, position process σ = `gazeOnlyPositionProcessSigma` (20,
+  best of {10,20,30,45} on tuning seeds 1000+), and low-confidence samples with χ²₂ > 9.21 are rejected.
+* Low-confidence samples never enter the windowed saccade test.
+* Held-out typical gazeEKF: 6×6 0.004 → 3.274, 10×10 0 → 3.077, 15×15 0 → 2.531, 30×30 0 → 0.147 BPS. Corrected presets
+  within one SD of before. Entering gaze-only mode with the hand channel on cost 0.2–0.3 BPS → opt-out.
+* Sim operator: compensatory gazing now learns `cursor − eye` from delayed feedback and aims at `target − offset`
+  (the old error×gain loop oscillated through the visual delay, gazeOnly was 0 on every grid).
+* Gate: `testGazeOnlyCoarseGridRegressionGate` (gazeOnly 6×6 > 2, gazeEKF 10×10 > 2.5).

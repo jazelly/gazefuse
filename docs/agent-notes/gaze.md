@@ -207,3 +207,18 @@ available for the integrator to stage and commit on `agent/gaze`.
   with small natural head movements, inspect the independent validation pass,
   then measure Webgrid with the fusion/click modules. No Webgrid BPS result is
   claimed by this module.
+
+## Iteration 2: pupil refinement + appearance model
+
+- `PupilLocator.timmBarth` (Timm & Barth 2011, gradient dot-product objective, weighted by inverted gaussian intensity)
+  on the eye crop from the camera Y plane, masked by the Vision eye contour. Synthetic error (eye-widths, mean):
+  48 px clean 0.0082 vs dark-centroid 0.0157; with glint+lashes+noise 0.0139 vs 0.0357; 32 px 0.0219 vs 0.0452.
+  17.85 ms/eye (debug). **On a real low-res clip (median eye 19.5 px) it increased jitter 0.0120 → 0.0456 eye-widths**, so
+  `FaceGazeExtractor` gates it (eye ≥ 32 px, distinctness ≥ 1.6, inside contour, shift ≤ 0.15); gated jitter 0.0120 → 0.0120.
+- `GazeSample.appearanceGaze` (yaw, pitch rad) from `AppearanceGazeEstimator` (CoreML, L2CS-style 90×4° bins → softmax
+  expectation, converted by `scripts/convert_gaze_model.py`; weights Gaze360 non-commercial → not shipped).
+  2.55 ms/frame on the real clip; noisy on small faces (median frame-to-frame change 7.53°).
+- `RidgeGazeCalibrator` appends `[ax, ay, ax², ay², ax·ay]` and keeps the appearance head only if leave-one-target-out
+  CV beats landmark-only (needs ≥60% of samples with appearance). Synthetic held-out: landmark σ0.05 266.6 pt →
+  +appearance 2.5° 161.6 pt; TB pupils 70.3 pt (appearance then dropped by CV, 15.3 vs 14.9).
+- Self-test: `GazeFuse --gaze-video FILE [--appearance-model FILE]`, env `GF_DUMP_DIR`, `GF_MIN_EYE_PX`.

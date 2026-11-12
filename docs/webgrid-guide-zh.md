@@ -39,6 +39,21 @@ open ~/Applications/GazeFuse.app
 
 建议打开 *Show / Hide HUD*（⌃⌥H）：蓝色圆圈 = 原始视线估计，绿色点 = 融合后的光标，方便你直观看到精度。
 
+### 3.1（可选）安装外观视线模型 + 瞳孔精定位
+
+```bash
+cd ~/myproj/gazefuse
+python3 -m venv .venv && .venv/bin/pip install torch torchvision coremltools
+mkdir -p ~/Library/Application\ Support/GazeFuse
+.venv/bin/python scripts/convert_gaze_model.py --arch mobileone_s0 \
+    --out ~/Library/Application\ Support/GazeFuse/GazeAppearance.mlpackage
+```
+
+- 模型代码来自 yakhyo/gaze-estimation（MIT），**预训练权重基于 Gaze360（仅限非商业研究用途）**，因此仓库不分发权重，只在本机转换。
+- 装好后重启 GazeFuse 并**重新校准**；校准时会用交叉验证（leave-one-target-out CV）自动判断是否使用外观特征，结果对话框里会注明。
+- 菜单开关：*Pupil refinement (Timm–Barth)*（默认开，眼睛在画面中 < 32 px 时自动不用）、*Appearance gaze model*（默认开，没装模型就不生效）、*Adaptive pinch thresholds*（默认关；如果捏合经常识别不到可以打开试试）。
+- AirPods 咬牙点击现在在咬合过程中就触发（平均延迟 ≈0.12 s，原来 ≈0.44 s）；前 0.6 s 需要安静且头部不动。
+
 ## 4. 操作方式
 
 | 动作 | 效果 |
