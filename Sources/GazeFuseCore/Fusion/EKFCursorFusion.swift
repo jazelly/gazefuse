@@ -106,6 +106,8 @@ public struct EKFCursorFusionConfig: Codable, Equatable {
     /// Mode is `.saccade` for this long after a reset.
     public var saccadeModeDuration: TimeSec
     public var head: HeadPointerConfig
+    /// Online head→gaze leak compensation (see GazeHeadLeakCompensator).
+    public var leak: GazeHeadLeakConfig
     /// Uncertainty (pt) added per hand relative-delta input.
     public var relativeDeltaSigma: Double
     /// Mode is `.drag` while relative deltas arrived within this window.
@@ -138,6 +140,7 @@ public struct EKFCursorFusionConfig: Codable, Equatable {
                 saccadeMinConfidence: Double = 0.6,
                 saccadeModeDuration: TimeSec = 0.15,
                 head: HeadPointerConfig = HeadPointerConfig(),
+                leak: GazeHeadLeakConfig = GazeHeadLeakConfig(),
                 relativeDeltaSigma: Double = 1.0,
                 dragModeHold: TimeSec = 0.15,
                 stateMargin: Double = 100,
@@ -153,7 +156,7 @@ public struct EKFCursorFusionConfig: Codable, Equatable {
         self.saccadeConfirmWindow = saccadeConfirmWindow; self.saccadeClusterSigmas = saccadeClusterSigmas
         self.saccadeMaxWindow = saccadeMaxWindow; self.saccadeModeDuration = saccadeModeDuration
         self.saccadeMinConfidence = saccadeMinConfidence
-        self.head = head; self.relativeDeltaSigma = relativeDeltaSigma; self.dragModeHold = dragModeHold
+        self.head = head; self.leak = leak; self.relativeDeltaSigma = relativeDeltaSigma; self.dragModeHold = dragModeHold
         self.stateMargin = stateMargin; self.confidenceScalePoints = confidenceScalePoints
         self.historyCapacity = historyCapacity
     }
@@ -180,6 +183,9 @@ public final class EKFCursorFusion: CursorFusing {
     private var lastHandTime: TimeSec?
     private var lastResetTime: TimeSec?
     private var history: FusionCursorHistory
+    private var leakComp: GazeHeadLeakCompensator
+    /// Current head→gaze leak estimate (pt/rad).
+    public var headLeak: Point2 { leakComp.clampedLeak }
 
     private struct GazeObs { var t: TimeSec; var y: Point2; var r: Double }
     private var pendingOutliers: [GazeObs] = []
@@ -197,6 +203,7 @@ public final class EKFCursorFusion: CursorFusing {
         self.config = config
         self.screen = screen
         history = FusionCursorHistory(capacity: config.historyCapacity)
+        leakComp = GazeHeadLeakCompensator(config: config.leak, pointerGain: config.head.pointsPerRadian)
         ekf = EKFCursorFusion.initialFilter(screen: screen, config: config)
     }
 
@@ -234,6 +241,7 @@ public final class EKFCursorFusion: CursorFusing {
         lastGazeTime = nil; lastHeadTime = nil; lastHeadSample = nil; lastHandTime = nil; lastResetTime = nil
         pendingOutliers.removeAll(); recentInliers.removeAll()
         history.removeAll()
+        leakComp = GazeHeadLeakCompensator(config: config.leak, pointerGain: config.head.pointsPerRadian)
         stats = Stats()
     }
 
@@ -251,7 +259,8 @@ public final class EKFCursorFusion: CursorFusing {
         }
         let conf = min(max(gaze.confidence, 0.1), 1.0)
         let r = cfg.gazeSigmaPoints * cfg.gazeSigmaPoints / conf
-        let z = gaze.point
+        let useLeak = cfg.head.enabled && cfg.leak.enabled
+        let z = useLeak ? leakComp.compensate(gaze.point, at: t) : gaze.point
         lastGazeTime = max(lastGazeTime ?? t, t)
 
         if !gazeInitialized {
@@ -296,6 +305,7 @@ public final class EKFCursorFusion: CursorFusing {
         ekf.update(z: [z.x, z.y], H: Self.Hgaze, R: .diagonal([r, r]))
         clampState()
         stats.gazeAccepted += 1
+        if useLeak && gaze.confidence >= cfg.saccadeMinConfidence { leakComp.learn(gaze.point, at: t) }
 
         // (B) windowed medium-shift test.
         let maxWindow = cfg.saccadeMaxWindow
@@ -341,6 +351,7 @@ public final class EKFCursorFusion: CursorFusing {
         // sample intentionally produces no derivative but still becomes the anchor.
         if !outOfOrder { lastHeadSample = head }
         guard let rates else { return }
+        if cfg.leak.enabled && !outOfOrder { leakComp.ingestHead(yawRate: rates.yaw, pitchRate: rates.pitch, at: t) }
         let v = HeadPointerGain.velocity(yawRate: rates.yaw, pitchRate: rates.pitch, config: cfg.head)
         let r = cfg.head.velocitySigma * cfg.head.velocitySigma
         ekf.update(z: [v.x, v.y], H: Self.Hvel, R: .diagonal([r, r]))
@@ -497,6 +508,7 @@ public final class EKFCursorFusion: CursorFusing {
         clampState()
         lastResetTime = t
         stats.resets += 1
+        leakComp.newFixation(at: t)
         pendingOutliers.removeAll(); recentInliers.removeAll()
     }
 
