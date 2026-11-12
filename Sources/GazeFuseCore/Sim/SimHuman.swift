@@ -415,12 +415,20 @@ public final class SimHuman {
         guard hasTarget, clickOnsetAt == nil, t > awaitingUntil, !isHandClutched, handEngageAt == nil,
               headSub == nil, landedAt != nil, saccade == nil else { return }
         let tp = t - d.perceptionDelay
-        if let cur = perceived.value(at: tp), targetRect.contains(cur) {
+        let f = min(max(d.clickInnerFraction, 0.05), 1)
+        let inner = ScreenRect(x: targetRect.origin.x + targetRect.width * (1 - f) / 2, y: targetRect.origin.y + targetRect.height * (1 - f) / 2,
+                               width: targetRect.width * f, height: targetRect.height * f)
+        if let cur = perceived.value(at: tp), inner.contains(cur) {
             if insideSince == nil { insideSince = tp }
         } else {
             insideSince = nil
         }
-        let dwellOK = insideSince.map { tp - $0 >= d.clickDwell } ?? false
+        // Click only once the cursor has visibly settled (it barely moved over the dwell).
+        var settled = true
+        if let cur = perceived.value(at: tp), let before = perceived.value(at: tp - d.clickDwell) {
+            settled = (cur - before).length < cfg.webgrid.cellSize * d.settleFraction
+        }
+        let dwellOK = settled && (insideSince.map { tp - $0 >= d.clickDwell } ?? false)
         let patienceOK = t - max(targetOnset, lastClickDecision) > d.patience
         if dwellOK || patienceOK {
             if !dwellOK { patienceClicks += 1 }

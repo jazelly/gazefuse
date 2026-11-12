@@ -99,6 +99,10 @@ public struct EKFCursorFusionConfig: Codable, Equatable {
     public var saccadeClusterSigmas: Double
     /// Max window length for test (B); 0 or 1 disables it.
     public var saccadeMaxWindow: Int
+    /// Gaze samples below this confidence may never trigger (or count toward) a
+    /// saccade reset — blink-edge artefacts are low-confidence, large, and
+    /// otherwise look exactly like a 2-sample saccade. They are simply rejected.
+    public var saccadeMinConfidence: Double
     /// Mode is `.saccade` for this long after a reset.
     public var saccadeModeDuration: TimeSec
     public var head: HeadPointerConfig
@@ -131,6 +135,7 @@ public struct EKFCursorFusionConfig: Codable, Equatable {
                 saccadeConfirmWindow: TimeSec = 0.12,
                 saccadeClusterSigmas: Double = FusionDefaultTuning.saccadeClusterSigmas,
                 saccadeMaxWindow: Int = 8,
+                saccadeMinConfidence: Double = 0.6,
                 saccadeModeDuration: TimeSec = 0.15,
                 head: HeadPointerConfig = HeadPointerConfig(),
                 relativeDeltaSigma: Double = 1.0,
@@ -147,6 +152,7 @@ public struct EKFCursorFusionConfig: Codable, Equatable {
         self.saccadeMinJumpPoints = saccadeMinJumpPoints; self.saccadeConfirmSamples = saccadeConfirmSamples
         self.saccadeConfirmWindow = saccadeConfirmWindow; self.saccadeClusterSigmas = saccadeClusterSigmas
         self.saccadeMaxWindow = saccadeMaxWindow; self.saccadeModeDuration = saccadeModeDuration
+        self.saccadeMinConfidence = saccadeMinConfidence
         self.head = head; self.relativeDeltaSigma = relativeDeltaSigma; self.dragModeHold = dragModeHold
         self.stateMargin = stateMargin; self.confidenceScalePoints = confidenceScalePoints
         self.historyCapacity = historyCapacity
@@ -267,6 +273,7 @@ public final class EKFCursorFusion: CursorFusing {
 
         // (A) single-sample gate → outlier queue → confirmed saccade.
         if nis1 > cfg.saccadeGateNIS && y.length > cfg.saccadeMinJumpPoints {
+            if gaze.confidence < cfg.saccadeMinConfidence { stats.gazeRejected += 1; return }
             pendingOutliers.removeAll { t - $0.t > cfg.saccadeConfirmWindow }
             pendingOutliers.append(GazeObs(t: t, y: y, r: r))
             if pendingOutliers.count >= max(cfg.saccadeConfirmSamples, 1) {

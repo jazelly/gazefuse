@@ -222,6 +222,11 @@ public struct SimDecisionConfig: Codable, Equatable {
     public var perceptionDelay: Double = 0.10
     /// The perceived cursor must sit inside the target for this long before a click.
     public var clickDwell: Double = 0.10
+    /// The user clicks only when the perceived cursor is inside the central
+    /// fraction of the target cell (speed–accuracy strategy; 1 = anywhere in the cell).
+    public var clickInnerFraction: Double = 0.6
+    /// …and only once it moved less than this fraction of a cell during the dwell.
+    public var settleFraction: Double = 0.25
     /// Patience: click anyway after this long on one target.
     public var patience: Double = 3.0
     /// Compensatory gazing (no correction channel): re-aim the eyes by the perceived
