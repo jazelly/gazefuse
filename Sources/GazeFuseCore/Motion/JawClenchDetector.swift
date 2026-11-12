@@ -52,6 +52,19 @@ public final class JawClenchDetector: JawClenchDetecting {
         public var doubleClenchEnabled: Bool = false
         /// Maximum onset-to-onset interval; single clicks wait for this deadline.
         public var doubleClenchInterval: Double = 0.5
+        /// Low-latency path: commit the click *during* the burst, once it has lasted
+        /// `earlyCommitDuration`, has raw support, peaked at `earlyCommitPeakRatio` × threshold,
+        /// and was preceded by at least `earlyCommitQuietBefore` of rest (rejects chewing/talking
+        /// chains, whose bursts are separated by short gaps). Bursts that do not qualify still go
+        /// through the classic release + quietAfter path. Disabled while double-clench is on.
+        public var earlyCommitEnabled: Bool = true
+        public var earlyCommitDuration: Double = 0.06
+        public var earlyCommitPeakRatio: Double = 1.25
+        public var earlyCommitQuietBefore: Double = 0.6
+        /// Early commit also requires the head to be still (|ω| below this, rad/s) for
+        /// `earlyCommitQuietBefore` before onset and throughout the burst. Head turns and
+        /// walking start with a rotation ramp that the classic path only vetoes later.
+        public var earlyCommitMaxRotation: Double = 0.08
         public var calibrationSeparationZ: Double = 3
         public var calibrationPeakRatio: Double = 0.45
         public init() {}
@@ -71,6 +84,10 @@ public final class JawClenchDetector: JawClenchDetecting {
         var baseline: Vector3
         var supportCount: Int
         var releaseSince: Double?
+        var quietBeforeDuration: Double = 0
+        var committed = false
+        var rotationStillBefore: Double = 0
+        var maxRotation: Double = 0
     }
     private var features: MotionJawFeatures
     private var previousTime: Double?
@@ -78,6 +95,7 @@ public final class JawClenchDetector: JawClenchDetecting {
     private var quietSince: Double?
     private var blockedUntil = -Double.infinity
     private var lastAcceptedOnset = -Double.infinity
+    private var lastRotationAbove = -Double.infinity
     private var candidate: Candidate?
     private var pendingSingle: InputEvent?
     private var noise: [(t: Double, value: Double)] = []
@@ -118,6 +136,7 @@ public final class JawClenchDetector: JawClenchDetecting {
         quietSince = nil
         blockedUntil = -.infinity
         lastAcceptedOnset = -.infinity
+        lastRotationAbove = -.infinity
         candidate = nil
         pendingSingle = nil
         noise.removeAll(keepingCapacity: true)
@@ -142,6 +161,8 @@ public final class JawClenchDetector: JawClenchDetecting {
         if sessionStart == nil { sessionStart = sample.t }
         let feature = features.process(sample)
         currentRMS = feature.rms
+        let rotation = sample.rotationRate.length
+        if rotation > config.earlyCommitMaxRotation { lastRotationAbove = sample.t }
         let threshold = max(config.minimumRMS, noiseMedian + config.thresholdZ * max(noiseSigma, config.noiseScaleFloor))
         currentThresholdRMS = threshold
 
@@ -164,6 +185,7 @@ public final class JawClenchDetector: JawClenchDetecting {
         }
 
         if var active = candidate {
+            active.maxRotation = max(active.maxRotation, rotation)
             let support = MotionJawFeatures.distance(sample.userAcceleration, active.baseline)
             if support >= active.threshold * config.supportRatio {
                 active.supportCount += 1
@@ -179,6 +201,18 @@ public final class JawClenchDetector: JawClenchDetecting {
                 active.releaseSince = sample.t
                 quietSince = sample.t
             }
+            if config.earlyCommitEnabled, !config.doubleClenchEnabled, !active.committed,
+               active.quietBeforeDuration >= config.earlyCommitQuietBefore,
+               active.rotationStillBefore >= config.earlyCommitQuietBefore,
+               active.maxRotation <= config.earlyCommitMaxRotation,
+               sample.t - active.onset >= config.earlyCommitDuration,
+               active.supportCount >= config.minimumSupportingSamples,
+               active.peak >= active.threshold * config.earlyCommitPeakRatio {
+                active.committed = true
+                let confidence = min(1, max(0, 0.5 + 0.5 * (active.peak / active.threshold - 1)))
+                events.append(InputEvent(t: active.onset, source: .jaw, kind: .click, confidence: confidence))
+                lastAcceptedOnset = active.onset
+            }
             // Bound the physical excursion, not the causal filter's decay tail.
             if active.lastSupported - active.onset > config.maximumBurstDuration {
                 candidate = nil
@@ -186,7 +220,7 @@ public final class JawClenchDetector: JawClenchDetecting {
             } else if let releaseSince = active.releaseSince, sample.t - releaseSince >= config.quietAfter {
                 candidate = nil
                 let duration = active.lastActive - active.onset
-                if duration >= config.minimumBurstDuration &&
+                if !active.committed && duration >= config.minimumBurstDuration &&
                     active.lastSupported - active.onset <= config.maximumBurstDuration &&
                     active.supportCount >= config.minimumSupportingSamples {
                     // Evidence strength, not a calibrated probability of intent.
@@ -209,14 +243,16 @@ public final class JawClenchDetector: JawClenchDetecting {
                 candidate = active
             }
         } else if feature.rms >= threshold {
-            let wasQuiet = quietSince.map { sample.t - $0 >= config.quietBefore } ?? false
+            let quietFor = quietSince.map { sample.t - $0 } ?? 0
+            let wasQuiet = quietFor >= config.quietBefore
             if sample.t - sessionStart! >= config.noiseWarmup && wasQuiet &&
                 sample.t - lastAcceptedOnset >= config.refractoryPeriod {
                 candidate = Candidate(onset: sample.t, lastActive: sample.t, lastSupported: sample.t, peak: feature.rms,
                                       threshold: threshold, median: noiseMedian, baseline: feature.baseline,
                                       supportCount: features.supportingSampleCount(threshold: threshold * config.supportRatio,
                                                                                  baseline: feature.baseline),
-                                      releaseSince: nil)
+                                      releaseSince: nil, quietBeforeDuration: quietFor,
+                                      rotationStillBefore: sample.t - lastRotationAbove, maxRotation: rotation)
             }
             quietSince = nil
         } else {

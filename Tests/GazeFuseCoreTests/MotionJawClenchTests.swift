@@ -170,7 +170,14 @@ final class MotionJawClenchTests: XCTestCase {
         return (precision, recall, f1, matched)
     }
 
-    func testLongContinuousSyntheticBenchmarkReportsUsefulMetrics() {
+    private struct MotionJawBench {
+        var precision = 0.0, recall = 0.0, f1 = 0.0, meanLatency = 0.0, p90Latency = 0.0
+        var matched = 0, events = 0, truths = 0
+        var fpPerMinute: [String: Double] = [:]
+        var missed: [Double] = []
+    }
+
+    private func mixedBenchmark(config: JawClenchDetector.Config, seed: UInt64 = 0xC1E4CE) -> MotionJawBench {
         let bursts = [
             MotionJawBurst(start: 3.0, duration: 0.14, amplitude: 0.022),
             MotionJawBurst(start: 7.2, duration: 0.20, amplitude: 0.031),
@@ -203,37 +210,65 @@ final class MotionJawClenchTests: XCTestCase {
             MotionJawBlock(name: "talking", start: 92.0, end: 103.0),
             MotionJawBlock(name: "chewing", start: 116.0, end: 121.5)
         ]
-        let samples = stream(duration: 150, seed: 0xC1E4CE, bursts: bursts,
+        let samples = stream(duration: 150, seed: seed, bursts: bursts,
                              blocks: blocks, dropoutEvery: 127, impulseAt: 18.4)
-        let delivered = feed(samples, into: JawClenchDetector())
+        let delivered = feed(samples, into: JawClenchDetector(config: config))
         let metrics = score(delivered, truths: bursts)
         let clicks = delivered.filter { $0.event.source == .jaw && $0.event.kind == .click }
-        let latencies = clicks.map { $0.deliveredAt - $0.event.t }
-        let meanLatency = latencies.isEmpty ? 0 : latencies.reduce(0, +) / Double(latencies.count)
-        let missed = bursts.filter { burst in !clicks.contains { matches($0.event, to: burst) } }
-        print(String(format: "MotionJaw mixed 150s samples=%d: TP=%d/%d events=%d precision=%.3f recall=%.3f F1=%.3f meanDeliveryLatency=%.3fs",
-                     samples.count, metrics.matched, bursts.count, clicks.count,
-                     metrics.precision, metrics.recall, metrics.f1, meanLatency))
-        let missedStarts = missed.map { String(format: "%.2f", $0.start) }
-        print("MotionJaw missed burst starts: \(missedStarts)")
-
-        XCTAssertGreaterThanOrEqual(metrics.precision, 0.90,
-                                    String(format: "mixed-stream precision %.3f (matched=%d events=%d)", metrics.precision, metrics.matched, clicks.count))
-        XCTAssertGreaterThanOrEqual(metrics.recall, 0.80,
-                                    String(format: "mixed-stream recall %.3f (matched=%d/%d)", metrics.recall, metrics.matched, bursts.count))
-        XCTAssertGreaterThanOrEqual(metrics.f1, 0.84, String(format: "mixed-stream F1 %.3f", metrics.f1))
-
+        let latencies = clicks.map { $0.deliveredAt - $0.event.t }.sorted()
+        var out = MotionJawBench()
+        out.precision = metrics.precision; out.recall = metrics.recall; out.f1 = metrics.f1
+        out.matched = metrics.matched; out.events = clicks.count; out.truths = bursts.count
+        out.meanLatency = latencies.isEmpty ? 0 : latencies.reduce(0, +) / Double(latencies.count)
+        out.p90Latency = latencies.isEmpty ? 0 : latencies[min(latencies.count - 1, Int(0.9 * Double(latencies.count)))]
+        out.missed = bursts.filter { burst in !clicks.contains { matches($0.event, to: burst) } }.map(\.start)
         for block in blocks {
-            let falsePositives = clicks.filter { delivered in
-                delivered.event.t >= block.start && delivered.event.t < block.end &&
-                    !bursts.contains { matches(delivered.event, to: $0) }
-            }.count
-            let fpPerMinute = Double(falsePositives) / ((block.end - block.start) / 60)
-            print(String(format: "MotionJaw nuisance %@ duration=%.1fs FP=%d FP/min=%.2f",
-                         block.name, block.end - block.start, falsePositives, fpPerMinute))
-            XCTAssertLessThanOrEqual(fpPerMinute, 12.0,
-                                     String(format: "nuisance %@ produced %.2f FP/min", block.name, fpPerMinute))
+            let fp = clicks.filter { d in d.event.t >= block.start && d.event.t < block.end && !bursts.contains { matches(d.event, to: $0) } }.count
+            out.fpPerMinute[block.name] = Double(fp) / ((block.end - block.start) / 60)
         }
+        return out
+    }
+
+    private func report(_ label: String, _ m: MotionJawBench) {
+        print(String(format: "MotionJaw %@: TP=%d/%d events=%d precision=%.3f recall=%.3f F1=%.3f meanLatency=%.3fs p90=%.3fs",
+                     label, m.matched, m.truths, m.events, m.precision, m.recall, m.f1, m.meanLatency, m.p90Latency)
+              + " FP/min " + m.fpPerMinute.sorted { $0.key < $1.key }.map { "\($0.key)=\(String(format: "%.2f", $0.value))" }.joined(separator: " "))
+    }
+
+    func testLongContinuousSyntheticBenchmarkReportsUsefulMetrics() {
+        var classic = JawClenchDetector.Config(); classic.earlyCommitEnabled = false
+        let before = mixedBenchmark(config: classic)
+        let after = mixedBenchmark(config: JawClenchDetector.Config())
+        report("classic (release+quietAfter)", before)
+        report("early-commit (default)", after)
+        print("MotionJaw missed burst starts: \(after.missed)")
+        XCTAssertGreaterThanOrEqual(after.precision, 0.90)
+        XCTAssertGreaterThanOrEqual(after.recall, 0.80)
+        XCTAssertGreaterThanOrEqual(after.f1, max(0.84, before.f1 - 0.005), "early commit must not hurt F1")
+        XCTAssertLessThan(after.meanLatency, 0.30, "early commit should cut mean delivery latency")
+        for (name, fp) in after.fpPerMinute { XCTAssertLessThanOrEqual(fp, 12.0, "nuisance \(name) FP/min \(fp)") }
+        // Robustness across noise seeds: early commit no worse than classic on F1 on average.
+        var fb = 0.0, fa = 0.0
+        for seed: UInt64 in [1, 2, 3, 4, 5, 6, 7, 8] {
+            fb += mixedBenchmark(config: classic, seed: seed).f1; fa += mixedBenchmark(config: JawClenchDetector.Config(), seed: seed).f1
+        }
+        print(String(format: "MotionJaw 8-seed mean F1 classic=%.3f early=%.3f", fb / 8, fa / 8))
+        XCTAssertGreaterThanOrEqual(fa / 8, fb / 8 - 0.01)
+    }
+
+    func testZZJawSweep() throws {
+        guard ProcessInfo.processInfo.environment["GF_SWEEP"] != nil else { throw XCTSkip("sweep") }
+        var classic = JawClenchDetector.Config(); classic.earlyCommitEnabled = false
+        report("classic", mixedBenchmark(config: classic))
+        for d in [0.04, 0.06, 0.08, 0.10, 0.12] { for r in [1.0, 1.25] { for q in [0.3, 0.6] {
+            var c = JawClenchDetector.Config(); c.earlyCommitDuration = d; c.earlyCommitPeakRatio = r; c.earlyCommitQuietBefore = q
+            var f = 0.0, l = 0.0
+            for seed: UInt64 in [0xC1E4CE, 1, 2, 3, 4, 5] { let m = mixedBenchmark(config: c, seed: seed); f += m.f1; l += m.meanLatency }
+            report(String(format: "d=%.2f r=%.2f q=%.2f meanF1(6)=%.3f meanLat(6)=%.3f", d, r, q, f / 6, l / 6), mixedBenchmark(config: c))
+        } } }
+        var fc = 0.0, lc = 0.0
+        for seed: UInt64 in [0xC1E4CE, 1, 2, 3, 4, 5] { let m = mixedBenchmark(config: classic, seed: seed); fc += m.f1; lc += m.meanLatency }
+        print(String(format: "MotionJaw classic meanF1(6)=%.3f meanLat(6)=%.3f", fc / 6, lc / 6))
     }
 
     func testSingleOutlierAndLongGapDoNotBecomeClicks() {
