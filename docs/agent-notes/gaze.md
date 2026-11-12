@@ -185,7 +185,7 @@ stable across calibration and use.
 All changes are limited to the gaze-owned source/test paths and this note. No
 push was attempted. The requested commit could not be created: `git add` failed
 with `Operation not permitted` creating
-`/Users/jazelly/Desktop/github/my-proj/gazefuse/.git/worktrees/gazefuse-wt-gaze/index.lock`.
+the worktree `index.lock`.
 That Git directory is outside the writable worktree. The source remains
 available for the integrator to stage and commit on `agent/gaze`.
 
