@@ -83,10 +83,15 @@ public struct GazeSample: Codable, Equatable {
     /// Optional extra landmark-derived features (e.g. inner/outer eye-corner positions),
     /// free for an extractor to fill and a mapper to consume. Keep length stable per session.
     public var extra: [Double]?
+    /// Optional appearance-based (CNN) gaze direction for the face crop, radians:
+    /// x = yaw, y = pitch, in the model's own convention (the calibration absorbs signs/offsets).
+    public var appearanceGaze: Point2?
 
     public init(t: TimeSec, leftPupil: Point2?, rightPupil: Point2?, leftEyeOpenness: Double? = nil,
                 rightEyeOpenness: Double? = nil, headYaw: Double?, headPitch: Double?, headRoll: Double?,
-                faceCenter: Point2, faceSize: Double, confidence: Double, extra: [Double]? = nil) {
+                faceCenter: Point2, faceSize: Double, confidence: Double, extra: [Double]? = nil,
+                appearanceGaze: Point2? = nil) {
+        self.appearanceGaze = appearanceGaze
         self.t = t; self.leftPupil = leftPupil; self.rightPupil = rightPupil
         self.leftEyeOpenness = leftEyeOpenness; self.rightEyeOpenness = rightEyeOpenness
         self.headYaw = headYaw; self.headPitch = headPitch; self.headRoll = headRoll

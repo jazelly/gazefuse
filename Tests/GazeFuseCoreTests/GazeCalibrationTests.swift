@@ -2,9 +2,11 @@ import XCTest
 @testable import GazeFuseCore
 
 final class GazeCalibrationTests: XCTestCase {
-    private func train(config: RidgeGazeCalibrator.Config = .init(), contaminated: Bool = false)
+    private func train(config: RidgeGazeCalibrator.Config = .init(), contaminated: Bool = false,
+                       landmarkNoise: Double? = nil, appearanceSigma: Double? = nil)
         throws -> (RidgeGazeCalibrator, CalibrationReport) {
         var eye = GazeSyntheticEye()
+        eye.landmarkNoise = landmarkNoise; eye.appearanceSigma = appearanceSigma
         let mapper = RidgeGazeCalibrator(config: config)
         let targets = (0..<16).map { i in
             Point2(eye.screen.origin.x + 110 + Double(i % 4) * 405,
@@ -19,8 +21,10 @@ final class GazeCalibrationTests: XCTestCase {
     }
 
     private func heldOutErrors(_ mapper: RidgeGazeCalibrator, headAmplitude: Double = 0.055,
-                               bias: Point2 = .zero) throws -> [Double] {
+                               bias: Point2 = .zero, landmarkNoise: Double? = nil,
+                               appearanceSigma: Double? = nil) throws -> [Double] {
         var eye = GazeSyntheticEye(rng: GazeTestRNG(state: 0xC0FFEE))
+        eye.landmarkNoise = landmarkNoise; eye.appearanceSigma = appearanceSigma
         return try (0..<240).map { i in
             let target = Point2(eye.screen.origin.x + 70 + 1300 * eye.rng.uniform(),
                                 eye.screen.origin.y + 60 + 780 * eye.rng.uniform())
@@ -50,6 +54,31 @@ final class GazeCalibrationTests: XCTestCase {
         XCTAssertGreaterThan(robustReport.sampleCount, 100)
         XCTAssertLessThan(robustReport.sampleCount, 16 * 36)
         XCTAssertTrue(robustReport.meanErrorPoints.isFinite)
+    }
+
+    /// Webcam-realistic per-frame noise. Landmark σ 0.05 eye-widths is the assumed Vision
+    /// pupil-landmark error; 0.011 is the Timm–Barth error measured on synthetic eye patches
+    /// (GazePupilLocatorTests); appearance σ 2.5° per frame is a typical calibrated CNN.
+    func testPupilRefinementAndAppearanceFusionCutCalibrationError() throws {
+        var rows: [(String, Double, Double, Double)] = []
+        func run(_ name: String, landmark: Double, appearance: Double?) throws -> Double {
+            let (m, report) = try train(landmarkNoise: landmark, appearanceSigma: appearance)
+            let e = try heldOutErrors(m, landmarkNoise: landmark, appearanceSigma: appearance)
+            rows.append((name, mean(e), p95(e), report.meanErrorPoints))
+            print(String(format: "GAZE_FUSION %@: held-out mean %.1f pt p95 %.1f pt (CV %.1f) — %@",
+                         name, mean(e), p95(e), report.meanErrorPoints, report.notes))
+            return mean(e)
+        }
+        let landmark = try run("landmark σ0.05", landmark: 0.05, appearance: nil)
+        let tb = try run("Timm–Barth σ0.011", landmark: 0.011, appearance: nil)
+        let app = try run("landmark σ0.05 + appearance 2.5°", landmark: 0.05, appearance: 2.5 * .pi / 180)
+        let both = try run("Timm–Barth σ0.011 + appearance 2.5°", landmark: 0.011, appearance: 2.5 * .pi / 180)
+        let appOnlyNoisy = try run("landmark σ0.05 + appearance 5°", landmark: 0.05, appearance: 5 * .pi / 180)
+        XCTAssertLessThan(tb, landmark * 0.5)
+        XCTAssertLessThan(app, landmark)
+        // With a precise pupil the appearance head is only kept when CV says it helps.
+        XCTAssertLessThan(both, tb * 1.05)
+        XCTAssertLessThan(appOnlyNoisy, landmark * 1.02, "a noisy appearance head must not make things worse")
     }
 
     func testBlinkAndEyeDropoutConfidence() throws {

@@ -61,6 +61,12 @@ public final class RidgeGazeCalibrator: GazeMapper {
         public var polynomialFeatures: Bool
         /// Bounded recent click corrections used for online bias refinement.
         public var maxCorrections: Int
+        /// Also fit a second head that adds appearance-model yaw/pitch (+ quadratic terms) when
+        /// enough calibration samples carry `appearanceGaze`; it is kept only if its
+        /// leave-one-target-out error beats the landmark-only model.
+        public var appearanceFeatures: Bool = true
+        /// Minimum fraction of usable rows that must carry appearance gaze to fit that head.
+        public var minimumAppearanceFraction: Double = 0.6
 
         public init(
             onsetExclusionSeconds: Double = 0.30,
@@ -104,6 +110,11 @@ public final class RidgeGazeCalibrator: GazeMapper {
         public var polynomialFeatures: Bool
         /// Median residual from recent click corrections, in screen points.
         public var correctionBias: Point2
+        /// Optional appearance head (landmark features + 5 appearance terms). Used for samples
+        /// that carry `appearanceGaze`; others fall back to the landmark-only weights.
+        public var appearanceWeightsX: [Double]?
+        public var appearanceWeightsY: [Double]?
+        public var appearanceLambda: Double?
 
         public init(
             featureCount: Int,
@@ -225,24 +236,27 @@ public final class RidgeGazeCalibrator: GazeMapper {
         guard !groups.isEmpty else { throw RidgeGazeError.noCalibrationData }
 
         let extraCount = min(config.maxExtraFeatures, groups.flatMap { $0.samples }.compactMap { $0.extra?.count }.max() ?? 0)
-        var rows: [TrainingRow] = []
-        rows.reserveCapacity(groups.reduce(0) { $0 + $1.samples.count })
-        var usableCounts = Array(repeating: 0, count: groups.count)
-        var acceptedRawSampleCount = 0
-
-        for (groupIndex, group) in groups.enumerated() {
-            let candidateSamples = usableSamples(in: group.samples)
-            guard !candidateSamples.isEmpty else { continue }
-            let candidates: [TrainingRow] = candidateSamples.compactMap { sample in
-                guard let raw = rawFeatures(sample, extraCount: extraCount, headPose: config.headPoseFeatures), raw.hasFinite else { return nil }
-                return TrainingRow(time: sample.t, features: makeFeatures(raw.values, extraCount: extraCount, headPose: config.headPoseFeatures, polynomial: config.polynomialFeatures), target: group.target, groupIndex: groupIndex, confidence: sampleConfidence(sample))
+        func buildRows(appearance: Bool) -> (rows: [TrainingRow], usable: [Int], accepted: Int) {
+            var rows: [TrainingRow] = []
+            var usableCounts = Array(repeating: 0, count: groups.count)
+            var accepted = 0
+            for (groupIndex, group) in groups.enumerated() {
+                let candidateSamples = usableSamples(in: group.samples)
+                guard !candidateSamples.isEmpty else { continue }
+                let candidates: [TrainingRow] = candidateSamples.compactMap { sample in
+                    guard let raw = rawFeatures(sample, extraCount: extraCount, headPose: config.headPoseFeatures, appearance: appearance), raw.hasFinite else { return nil }
+                    return TrainingRow(time: sample.t, features: makeFeatures(raw.values, extraCount: extraCount, headPose: config.headPoseFeatures, polynomial: config.polynomialFeatures), target: group.target, groupIndex: groupIndex, confidence: sampleConfidence(sample))
+                }
+                guard !candidates.isEmpty else { continue }
+                let robust = robustRows(candidates)
+                usableCounts[groupIndex] = robust.count
+                accepted += robust.count
+                rows.append(contentsOf: medianBins(robust, binSize: config.aggregationBinSize))
             }
-            guard !candidates.isEmpty else { continue }
-            let robust = robustRows(candidates)
-            usableCounts[groupIndex] = robust.count
-            acceptedRawSampleCount += robust.count
-            rows.append(contentsOf: medianBins(robust, binSize: config.aggregationBinSize))
+            return (rows, usableCounts, accepted)
         }
+        let base = buildRows(appearance: false)
+        let rows = base.rows, usableCounts = base.usable, acceptedRawSampleCount = base.accepted
 
         guard rows.count >= 3, usableCounts.filter({ $0 > 0 }).count >= 3 else {
             throw RidgeGazeError.insufficientUsableSamples
@@ -253,21 +267,45 @@ public final class RidgeGazeCalibrator: GazeMapper {
             throw RidgeGazeError.insufficientUsableSamples
         }
         let priorBias = model?.correctionBias ?? correctionMedian()
-        let fitted = Model(featureCount: featureCount, extraFeatureCount: extraCount,
+        var fitted = Model(featureCount: featureCount, extraFeatureCount: extraCount,
                            weightsX: solved.x, weightsY: solved.y, lambda: selectedLambda,
                            headPoseFeatures: config.headPoseFeatures,
                            polynomialFeatures: config.polynomialFeatures,
                            correctionBias: priorBias)
-        let errors = crossValidatedErrors(rows: rows, featureCount: featureCount, lambda: selectedLambda)
+        var errors = crossValidatedErrors(rows: rows, featureCount: featureCount, lambda: selectedLambda)
         guard !errors.isEmpty else { throw RidgeGazeError.insufficientUsableSamples }
+        var appearanceNote = "appearance off"
+        if config.appearanceFeatures {
+            let app = buildRows(appearance: true)
+            if app.rows.count >= 3, app.usable.filter({ $0 > 0 }).count >= 3,
+               Double(app.rows.count) >= config.minimumAppearanceFraction * Double(rows.count) {
+                let fc = app.rows[0].features.count
+                let lam = chooseLambda(rows: app.rows, featureCount: fc)
+                if let sol = solve(rows: app.rows, featureCount: fc, lambda: lam) {
+                    let appErrors = crossValidatedErrors(rows: app.rows, featureCount: fc, lambda: lam)
+                    let baseMean = errors.reduce(0, +) / Double(errors.count)
+                    let appMean = appErrors.isEmpty ? .infinity : appErrors.reduce(0, +) / Double(appErrors.count)
+                    appearanceNote = String(format: "appearance head CV %.1f pt vs landmark %.1f pt", appMean, baseMean)
+                    if appMean < baseMean {
+                        fitted.appearanceWeightsX = sol.x; fitted.appearanceWeightsY = sol.y; fitted.appearanceLambda = lam
+                        errors = appErrors
+                        appearanceNote += " (used)"
+                    } else {
+                        appearanceNote += " (not better, dropped)"
+                    }
+                }
+            } else {
+                appearanceNote = "appearance: too few samples"
+            }
+        }
         let mean = errors.reduce(0, +) / Double(errors.count)
         let p95 = percentile(errors, 0.95)
         let report = CalibrationReport(pointCount: usableCounts.filter({ $0 > 0 }).count,
                                        sampleCount: acceptedRawSampleCount,
                                        meanErrorPoints: mean,
                                        p95ErrorPoints: p95,
-                                       notes: String(format: "ridge lambda %.6g; head pose %@; %d target groups",
-                                                     selectedLambda, config.headPoseFeatures ? "on" : "off", usableCounts.filter({ $0 > 0 }).count))
+                                       notes: String(format: "ridge lambda %.6g; head pose %@; %d target groups; %@",
+                                                     selectedLambda, config.headPoseFeatures ? "on" : "off", usableCounts.filter({ $0 > 0 }).count, appearanceNote))
         model = fitted
         lastReport = report
         return report
@@ -296,7 +334,12 @@ public final class RidgeGazeCalibrator: GazeMapper {
         var confidence: Double
     }
 
-    private func rawFeatures(_ sample: GazeSample, extraCount: Int, headPose: Bool) -> RawFeatures? {
+    private func rawFeatures(_ sample: GazeSample, extraCount: Int, headPose: Bool, appearance: Bool = false) -> RawFeatures? {
+        var appearanceTerms: [Double] = []
+        if appearance {
+            guard let a = sample.appearanceGaze, a.x.isFinite, a.y.isFinite else { return nil }
+            appearanceTerms = [a.x, a.y, a.x * a.x, a.y * a.y, a.x * a.y]
+        }
         let leftOpen = finite(sample.leftEyeOpenness) ?? 1
         let rightOpen = finite(sample.rightEyeOpenness) ?? 1
         let leftUsable = leftOpen >= config.blinkOpennessThreshold
@@ -329,6 +372,7 @@ public final class RidgeGazeCalibrator: GazeMapper {
                 values.append(index < extras.count ? (finite(extras[index]) ?? 0) : 0)
             }
         }
+        values.append(contentsOf: appearanceTerms)
         return RawFeatures(values: values)
     }
 
@@ -508,7 +552,18 @@ public final class RidgeGazeCalibrator: GazeMapper {
     }
 
     private func predict(_ sample: GazeSample, model: Model, includeCorrection: Bool) -> Point2? {
-        guard RidgeGazeCalibrator.isValid(model), let raw = rawFeatures(sample, extraCount: model.extraFeatureCount, headPose: model.headPoseFeatures), raw.hasFinite else { return nil }
+        guard RidgeGazeCalibrator.isValid(model) else { return nil }
+        if let wx = model.appearanceWeightsX, let wy = model.appearanceWeightsY, wx.count == model.featureCount + 5,
+           wy.count == wx.count, sample.appearanceGaze != nil,
+           let raw = rawFeatures(sample, extraCount: model.extraFeatureCount, headPose: model.headPoseFeatures, appearance: true), raw.hasFinite {
+            let features = makeFeatures(raw.values, extraCount: model.extraFeatureCount, headPose: model.headPoseFeatures, polynomial: model.polynomialFeatures)
+            if features.count == wx.count {
+                var point = Point2(dot(wx, features), dot(wy, features))
+                if includeCorrection { point = point + model.correctionBias }
+                if point.x.isFinite, point.y.isFinite { return point }
+            }
+        }
+        guard let raw = rawFeatures(sample, extraCount: model.extraFeatureCount, headPose: model.headPoseFeatures), raw.hasFinite else { return nil }
         let features = makeFeatures(raw.values, extraCount: model.extraFeatureCount, headPose: model.headPoseFeatures, polynomial: model.polynomialFeatures)
         guard features.count == model.featureCount else { return nil }
         var point = Point2(dot(model.weightsX, features), dot(model.weightsY, features))

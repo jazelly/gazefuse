@@ -6,6 +6,11 @@ import GazeFuseCore
 struct GazeSyntheticEye {
     let screen = ScreenRect(x: -180, y: 70, width: 1440, height: 900)
     var rng = GazeTestRNG(state: 0xEA7E_2026)
+    /// Overrides the per-frame landmark pupil noise (eye widths) when set.
+    var landmarkNoise: Double? = nil
+    /// When set, fills `appearanceGaze` = person-specific affine distortion of the true
+    /// gaze angles + i.i.d. noise with this σ (radians), like a CNN gaze model.
+    var appearanceSigma: Double? = nil
 
     mutating func sample(target: Point2, t: Double, phase: Double,
                          headAmplitude: Double = 0.055, noise: Double = 0.0007,
@@ -27,8 +32,16 @@ struct GazeSyntheticEye {
         func point(_ nx: Double, _ ny: Double) -> Point2 {
             Point2(rotatedX + nx, rotatedY + ny)
         }
-        let left = point(noise * rng.normal(), noise * rng.normal())
-        let right = point(noise * rng.normal(), noise * rng.normal())
+        let n = landmarkNoise ?? noise
+        let left = point(n * rng.normal(), n * rng.normal())
+        let right = point(n * rng.normal(), n * rng.normal())
+        var appearance: Point2? = nil
+        if let sa = appearanceSigma {
+            // Gaze direction in camera space (eye-in-head + head), with a personal bias/scale.
+            let gx = angleX, gy = angleY
+            appearance = Point2(0.85 * gx + 0.04 + 0.6 * gx * gx + sa * rng.normal(),
+                                0.75 * gy - 0.06 + 0.2 * gx * gy + sa * rng.normal())
+        }
         return GazeSample(
             t: t,
             leftPupil: outlier ? Point2(0.38, -0.3) : left,
@@ -37,7 +50,8 @@ struct GazeSyntheticEye {
             rightEyeOpenness: blink ? 0.025 : 0.25,
             headYaw: yaw, headPitch: pitch, headRoll: roll,
             faceCenter: Point2(0.5 + tx / 500, 0.5 - ty / 500),
-            faceSize: 0.30 * 650 / distance, confidence: 0.98
+            faceSize: 0.30 * 650 / distance, confidence: 0.98,
+            appearanceGaze: blink ? nil : appearance
         )
     }
 
