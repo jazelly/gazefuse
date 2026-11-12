@@ -70,6 +70,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         ch.addItem(take); ch.addItem(drag); ch.addItem(scr)
         ch.addItem(.separator())
         ch.addItem(item("Adaptive pinch thresholds (learns your pinch)", #selector(toggleAdaptivePinch(_:))))
+        let tb = item("Pupil refinement (Timm–Barth, eyes ≥ 32 px)", #selector(togglePupilRefinement(_:))); tb.state = .on
+        ch.addItem(tb)
+        let ap = item("Appearance gaze model (if installed)", #selector(toggleAppearance(_:))); ap.state = .on
+        ch.addItem(ap)
         let chItem = NSMenuItem(title: "Input Channels", action: nil, keyEquivalent: ""); chItem.submenu = ch
         m.addItem(chItem)
         m.addItem(item("Show / Hide HUD   ⌃⌥H", #selector(toggleHUD)))
@@ -165,6 +169,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             default: break
             }
         }
+    }
+
+    @objc private func togglePupilRefinement(_ sender: NSMenuItem) {
+        sender.state = sender.state == .on ? .off : .on
+        let on = sender.state == .on
+        engine.camera.setPupilRefinement(on)
+    }
+
+    @objc private func toggleAppearance(_ sender: NSMenuItem) {
+        sender.state = sender.state == .on ? .off : .on
+        engine.camera.setAppearanceEnabled(sender.state == .on)
     }
 
     @objc private func toggleAdaptivePinch(_ sender: NSMenuItem) {

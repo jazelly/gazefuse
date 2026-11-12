@@ -80,6 +80,10 @@ final class Engine {
 
     func startSensors() {
         do { try camera.configure() } catch { onLog?("Camera: \(error.localizedDescription)") }
+        if let model = AppearanceGazeEstimator.loadDefault(log: onLog) {
+            camera.appearance = model
+            onLog?("Appearance gaze model loaded: \(model.modelDescription). Recalibrate to use it.")
+        }
         camera.start()
         headphones.start()
         startTimer()

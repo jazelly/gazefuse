@@ -41,7 +41,12 @@ public final class FaceGazeExtractor {
         /// Eye patch is resampled to this width before Timm–Barth (cost ∝ width⁴).
         public var timmBarthPatchWidth: Int = 40
         /// A refined centre farther than this (eye widths) from Vision's landmark is rejected.
-        public var maximumRefinementShift: Double = 0.25
+        public var maximumRefinementShift: Double = 0.15
+        /// Timm–Barth is unreliable on tiny eyes (verified on a real 720p clip with ~15–30 px
+        /// eyes, where it was worse than Vision's landmark): skip below this eye width (pixels).
+        public var minimumEyeWidthForRefinement: Double = 32
+        /// Minimum Timm–Barth peak distinctness (peak / mean objective).
+        public var minimumRefinementDistinctness: Double = 1.6
         /// Skip refinement on nearly closed eyes (openness = height / width).
         public var minimumOpennessForRefinement: Double = 0.12
 
@@ -62,7 +67,7 @@ public final class FaceGazeExtractor {
 
     /// The request can be passed directly to `VNImageRequestHandler.perform`.
     public let requests: [VNRequest]
-    public let config: Config
+    public var config: Config
 
     private final class ObservationStore {
         var face: VNFaceObservation?
@@ -83,6 +88,15 @@ public final class FaceGazeExtractor {
     }
 
     private let store: ObservationStore
+    /// Diagnostics hook: (eye patch, mask, Timm–Barth centre, landmark pupil) in patch pixels.
+    public var debugPatchSink: ((GrayImage, [Bool], Point2, Point2) -> Void)?
+    /// Face bounding box (Vision normalized, bottom-left origin) of the last `extract`.
+    public private(set) var lastFaceBox: CGRect?
+    /// Pupil refinement counters (diagnostics / self-test).
+    public private(set) var refinementAttempts = 0
+    public private(set) var refinementAccepted = 0
+    /// Sum of accepted refinement shifts, in eye widths.
+    public private(set) var refinementShiftSum = 0.0
     private var pendingPixelBuffer: CVPixelBuffer?
     private let landmarksRequest: VNDetectFaceLandmarksRequest
 
@@ -137,6 +151,7 @@ public final class FaceGazeExtractor {
     /// be un-mirrored and `.up`, matching the shared image-space convention.
     public func extract(t: TimeSec, imageSize: CGSize) -> GazeSample? {
         defer { pendingPixelBuffer = nil }
+        lastFaceBox = nil
         guard imageSize.width > 1, imageSize.height > 1,
               let face = store.face,
               let landmarks = face.landmarks else { return nil }
@@ -145,6 +160,7 @@ public final class FaceGazeExtractor {
         guard rawFaceConfidence >= config.minimumFaceConfidence else { return nil }
 
         let box = face.boundingBox.standardized
+        lastFaceBox = box
         let left = makeEyeMetrics(landmarks.leftEye,
                                   pupilRegion: landmarks.leftPupil,
                                   faceBox: box,
@@ -164,13 +180,20 @@ public final class FaceGazeExtractor {
         // a larger CPU budget is available.
         if config.refinePupil, let pixelBuffer = pendingPixelBuffer {
             func refine(_ eye: EyeMetrics?) -> EyeMetrics? {
-                guard var e = eye, let pupil = e.pupil, (e.openness ?? 1) >= config.minimumOpennessForRefinement else { return eye }
+                guard var e = eye, let pupil = e.pupil, (e.openness ?? 1) >= config.minimumOpennessForRefinement,
+                      !config.useTimmBarth || e.widthPixels >= config.minimumEyeWidthForRefinement else { return eye }
                 let refined = config.useTimmBarth
                     ? refinePupilTimmBarth(pupil, eye: e, pixelBuffer: pixelBuffer, imageSize: imageSize)
                     : refinePupil(pupil, eye: e, pixelBuffer: pixelBuffer, imageSize: imageSize)
+                refinementAttempts += 1
                 if let refined {
                     let dx = Double(refined.x - pupil.x) * imageSize.width, dy = Double(refined.y - pupil.y) * imageSize.height
-                    if (dx * dx + dy * dy).squareRoot() <= config.maximumRefinementShift * e.widthPixels { e.pupil = refined }
+                    let shift = (dx * dx + dy * dy).squareRoot()
+                    if shift <= config.maximumRefinementShift * e.widthPixels {
+                        e.pupil = refined
+                        refinementAccepted += 1
+                        refinementShiftSum += shift / e.widthPixels
+                    }
                 }
                 return e
             }
@@ -471,7 +494,16 @@ public final class FaceGazeExtractor {
             mask[y * tw + x] = isInsideEyeContour(x: srcX, y: srcY, eye: eye, imageSize: imageSize)
         } }
         guard mask.filter({ $0 }).count >= 12,
-              let r = PupilLocator.timmBarth(patch, mask: mask) else { return nil }
+              let r = PupilLocator.timmBarth(patch, mask: mask),
+              r.distinctness >= config.minimumRefinementDistinctness else { return nil }
+        // The centre must lie inside the eye opening.
+        let ix = min(max(Int(r.center.x.rounded()), 0), tw - 1), iy = min(max(Int(r.center.y.rounded()), 0), th - 1)
+        guard mask[iy * tw + ix] else { return nil }
+        if let sink = debugPatchSink {
+            let lx = (Double(rough.x) * Double(width) - Double(x0)) / sx - 0.5
+            let ly = ((1 - Double(rough.y)) * Double(height) - Double(y0)) / sy - 0.5
+            sink(patch, mask, r.center, Point2(lx, ly))
+        }
         let fx = Double(x0) + (r.center.x + 0.5) * sx, fy = Double(y0) + (r.center.y + 0.5) * sy
         return CGPoint(x: fx / Double(width), y: 1 - fy / Double(height))
     }

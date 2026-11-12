@@ -12,6 +12,9 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     let face = FaceGazeExtractor()
     let hand = HandPoseExtractor()
 
+    /// Optional appearance-based gaze model (nil when none is installed).
+    var appearance: AppearanceGazeEstimator?
+    var appearanceEnabled = true
     var faceEnabled = true
     var handEnabled = true
     var onGaze: ((GazeSample?, TimeSec) -> Void)?
@@ -56,6 +59,10 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         if session.canAddOutput(out) { session.addOutput(out) }
     }
 
+    /// Toggled from the menu; applied on the camera queue (which owns the extractor).
+    func setPupilRefinement(_ on: Bool) { queue.async { self.face.config.refinePupil = on } }
+    func setAppearanceEnabled(_ on: Bool) { queue.async { self.appearanceEnabled = on } }
+
     func start() { queue.async { if !self.session.isRunning { self.session.startRunning() } } }
     func stop() { queue.async { if self.session.isRunning { self.session.stopRunning() } } }
 
@@ -79,7 +86,13 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         let handler = VNImageRequestHandler(cvPixelBuffer: pb, orientation: .up, options: [:])
         do { try handler.perform(reqs) } catch { face.clearPreparedFrame(); onStatus?("Vision error: \(error.localizedDescription)"); return }
         let size = CGSize(width: CVPixelBufferGetWidth(pb), height: CVPixelBufferGetHeight(pb))
-        if faceEnabled { onGaze?(face.extract(t: t, imageSize: size), t) }
+        if faceEnabled {
+            var sample = face.extract(t: t, imageSize: size)
+            if appearanceEnabled, sample != nil, let model = appearance, let box = face.lastFaceBox {
+                sample?.appearanceGaze = model.estimate(pixelBuffer: pb, faceBox: box)
+            }
+            onGaze?(sample, t)
+        }
         if handEnabled { onHand?(hand.extract(t: t), t) }
     }
 }
