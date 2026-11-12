@@ -331,7 +331,7 @@ public final class EKFCursorFusion: CursorFusing {
         // Low-confidence samples (blink edges) with a clearly inconsistent innovation are
         // rejected outright (χ²₂ 99%), and never enter the windowed saccade test below.
         let lowConfidence = gaze.confidence < cfg.saccadeMinConfidence
-        if lowConfidence && nis1 > 9.21 { stats.gazeRejected += 1; return }
+        if lowConfidence, isGazeOnlyMode(at: t), nis1 > 9.21 { stats.gazeRejected += 1; return }
 
         // Normal update. The same current-state measurement function is used for
         // in-order and late samples; see the OOSM note above.
