@@ -226,3 +226,16 @@ in the benchmark artifact.
 - The benchmark validates this software/model path only. Human trials and captured
   device recordings are the next evidence needed to set real defaults.
 - Files are left uncommitted for the integrator, per the worktree sandbox instruction.
+
+## Integrator changes (after the module hand-off)
+
+* `SimHuman`: continuous head servo (oscillated at ~0.35 s delay) replaced by intermittent minimum-jerk
+  submovements + gain adaptation; hand clutch uses take-off release as the click; clicks only after the
+  perceived cursor settles inside the inner 60% of the cell.
+* `EKFCursorFusion`: `saccadeMinConfidence` (0.6) — blink-edge samples can't reset; `GazeHeadLeakCompensator`
+  (fixation-differenced forgetting LS, clamped to 0.9 × pointer gain); innovation-adaptive gaze σ
+  (α 0.02, max 120 pt).
+* `DefaultTuning` from `gazefuse-bench tune --write-defaults` (train 4.956→5.238, held-out 4.783→5.129 BPS).
+* Simulated gazeHeadEKF/typical/30×30: 0 → 2.02 → 2.67 → 3.38 → 3.79 → 5.32 BPS (20 seeds from 3000). See docs/benchmarks.md.
+* Regression gate test: `FusionLeakAdaptiveTests.testSimulatorRegressionGate` (typical > 4 BPS, acc > 0.9).
+* Saccade `confirmSamples` 1 beats 2 by ~0.7 BPS in simulation; 2 may be more robust to real outliers.
