@@ -71,6 +71,14 @@ public struct EKFCursorFusionConfig: Codable, Equatable {
     /// max(gazeSigmaPoints, σ̂) where σ̂² is a robust running estimate from in-fixation
     /// innovations. Prevents false saccade resets when the real tracker is noisier than assumed.
     public var adaptiveGazeNoise: Bool = true
+    /// The gaze bias b is only observable through relative corrections (head / hand). When
+    /// none arrived within this window, gaze updates treat b as a Schmidt "consider" state
+    /// (never corrected by gaze), so b cannot silently absorb real gaze motion. 0 disables.
+    public var biasObservabilityWindow: Double = 2.0
+    /// Position random-walk σ (pt/√s) used while no correction channel is active (gaze-only
+    /// operation): the cursor must then follow small compensatory gaze shifts itself, whereas
+    /// with head/hand correction a near-zero `positionProcessSigma` is optimal. 0 = unchanged.
+    public var gazeOnlyPositionProcessSigma: Double = 20
     /// EMA weight of the innovation-variance estimate per accepted sample.
     public var adaptiveNoiseAlpha: Double = 0.02
     /// Upper bound for σ̂ (pt).
@@ -317,9 +325,17 @@ public final class EKFCursorFusion: CursorFusing {
         }
         pendingOutliers.removeAll()
 
+        // Low-confidence samples (blink edges) with a clearly inconsistent innovation are
+        // rejected outright (χ²₂ 99%), and never enter the windowed saccade test below.
+        let lowConfidence = gaze.confidence < cfg.saccadeMinConfidence
+        if lowConfidence && nis1 > 9.21 { stats.gazeRejected += 1; return }
+
         // Normal update. The same current-state measurement function is used for
         // in-order and late samples; see the OOSM note above.
-        ekf.update(z: [z.x, z.y], H: Self.Hgaze, R: .diagonal([r, r]))
+        let lastCorrection = max(lastHeadTime ?? -.infinity, lastHandTime ?? -.infinity)
+        let biasUnobservable = cfg.biasObservabilityWindow > 0 && t - lastCorrection > cfg.biasObservabilityWindow
+        ekf.update(z: [z.x, z.y], H: Self.Hgaze, R: .diagonal([r, r]),
+                   consider: biasUnobservable ? [Self.BX, Self.BY] : [])
         clampState()
         stats.gazeAccepted += 1
         if useLeak && gaze.confidence >= cfg.saccadeMinConfidence { leakComp.learn(gaze.point, at: t) }
@@ -332,7 +348,7 @@ public final class EKFCursorFusion: CursorFusing {
 
         // (B) windowed medium-shift test.
         let maxWindow = cfg.saccadeMaxWindow
-        guard maxWindow >= 2 else { return }
+        guard maxWindow >= 2, !lowConfidence else { return }
         recentInliers.append(GazeObs(t: t, y: y, r: r))
         if recentInliers.count > maxWindow { recentInliers.removeFirst(recentInliers.count - maxWindow) }
         let minM = max(cfg.saccadeConfirmSamples, 2)
@@ -487,8 +503,14 @@ public final class EKFCursorFusion: CursorFusing {
         F[Self.VX, Self.VX] = a; F[Self.VY, Self.VY] = a
         F[Self.BX, Self.VX] = -c; F[Self.BY, Self.VY] = -c
         let qa = cfg.headAccelerationSigma * cfg.headAccelerationSigma
-        let qx = cfg.positionProcessSigma * cfg.positionProcessSigma * d
-        let qb = cfg.biasProcessSigma * cfg.biasProcessSigma * d
+        let lastCorrection = max(lastHeadTime ?? -.infinity, lastHandTime ?? -.infinity)
+        let gazeOnly = cfg.biasObservabilityWindow > 0 && cfg.gazeOnlyPositionProcessSigma > 0 &&
+            filterTime - lastCorrection > cfg.biasObservabilityWindow
+        let ps = gazeOnly ? max(cfg.positionProcessSigma, cfg.gazeOnlyPositionProcessSigma) : cfg.positionProcessSigma
+        let qx = ps * ps * d
+        // Unobservable bias: do not let its variance grow either (it would only dilute the
+        // gaze gain through S = P_x + P_b + 2·P_xb + R).
+        let qb = gazeOnly ? 0 : cfg.biasProcessSigma * cfg.biasProcessSigma * d
         var Q = Matrix(rows: 6, cols: 6)
         let g = [d * d / 2, d, -d * d / 2]
         for axis in 0..<2 {

@@ -79,7 +79,8 @@ public struct ExtendedKalmanFilter {
     /// measurement is rejected and the state is left unchanged.
     @discardableResult
     public mutating func update(z: [Double], H: Matrix, R: Matrix,
-                                h: (([Double]) -> [Double])? = nil, gate: Double? = nil) -> EKFUpdateResult {
+                                h: (([Double]) -> [Double])? = nil, gate: Double? = nil,
+                                consider: [Int] = []) -> EKFUpdateResult {
         guard let (y, S, Sinv, nis) = innovation(z: z, H: H, R: R, h: h) else {
             return EKFUpdateResult(innovation: [], innovationCovariance: Matrix(rows: z.count, cols: z.count),
                                    nis: .infinity, applied: false)
@@ -87,7 +88,10 @@ public struct ExtendedKalmanFilter {
         if let g = gate, nis > g {
             return EKFUpdateResult(innovation: y, innovationCovariance: S, nis: nis, applied: false)
         }
-        let K = P * H.transposed * Sinv
+        var K = P * H.transposed * Sinv
+        // Schmidt-Kalman "consider" states: kept in the covariance but never corrected by this
+        // measurement (the Joseph-form update below stays valid for any gain).
+        for i in consider where i >= 0 && i < x.count { for j in 0..<K.cols { K[i, j] = 0 } }
         let Ky = (K * Matrix(column: y)).column
         for i in 0..<x.count { x[i] += Ky[i] }
         let IKH = Matrix.identity(x.count) - K * H

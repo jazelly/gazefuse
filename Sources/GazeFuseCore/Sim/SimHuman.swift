@@ -75,6 +75,10 @@ public final class SimHuman {
     private var blinkEnd: TimeSec = -1
     private var nextBlink: TimeSec = 0
     private var lastCompensation: TimeSec = -1
+    /// Compensatory gazing: the operator's running estimate of the cursor's offset from where
+    /// they are looking (cursor − eye), learned while fixating and carried across targets.
+    private var eyeHistory = SimDelayLine()
+    public private(set) var learnedOffset = Point2.zero
 
     // Perception
     private var perceived = SimDelayLine()
@@ -133,8 +137,11 @@ public final class SimHuman {
         plannedSaccade = (to: landingPoint(for: center), at: t + latency, primary: true)
     }
 
+    /// Where to look so that the cursor lands on `target` (only with compensatory gazing).
+    private func aimPoint(_ target: Point2) -> Point2 { cfg.compensatoryGaze ? target - learnedOffset : target }
+
     private func landingPoint(for target: Point2) -> Point2 {
-        let a = target - fixationPoint
+        let a = aimPoint(target) - fixationPoint
         return fixationPoint + a * (1 - cfg.eye.saccadeUndershootFraction) + rng.gaussian2D(sd: cfg.eye.saccadeLandingSigmaDeg * ppd)
     }
 
@@ -194,8 +201,8 @@ public final class SimHuman {
                 eyePosition = s.to; saccade = nil; drift = .zero
                 if s.primary {
                     landedAt = t
-                    if (targetCenter - s.to).length > e.correctiveThresholdDeg * ppd, plannedSaccade == nil {
-                        plannedSaccade = (to: targetCenter + rng.gaussian2D(sd: e.saccadeLandingSigmaDeg * ppd * e.correctiveSaccadeSigmaFraction),
+                    if (aimPoint(targetCenter) - s.to).length > e.correctiveThresholdDeg * ppd, plannedSaccade == nil {
+                        plannedSaccade = (to: aimPoint(targetCenter) + rng.gaussian2D(sd: e.saccadeLandingSigmaDeg * ppd * e.correctiveSaccadeSigmaFraction),
                                           at: t + e.correctiveSaccadeLatency, primary: false)
                     }
                 }
@@ -213,17 +220,26 @@ public final class SimHuman {
         }
         eyePosition = fixationPoint + drift
 
-        // Compensatory gazing: re-aim by the perceived offset when nothing else can correct.
+        eyeHistory.append(t, eyePosition)
+
+        // Compensatory gazing (when nothing else can correct): the operator sees the cursor
+        // sitting off their point of regard, updates the learned offset (cursor − eye) from what
+        // they saw `compensatoryReaction` ago — only if their eye was then fixating — and
+        // re-aims at target − offset. Using the eye position at the perceived time (not the
+        // current one) avoids the delay-driven oscillation of naive "error × gain" re-aiming.
         let d = cfg.decision
         if cfg.compensatoryGaze, hasTarget, landedAt != nil, plannedSaccade == nil, t > holdUntil,
            t - lastCompensation > d.compensatoryReaction,
-           let c = perceived.value(at: t - d.compensatoryReaction) {
-            let err = targetCenter - c
-            if err.length > d.compensatoryMinOffset {
-                plannedSaccade = (to: fixationPoint + err * d.compensatoryGain + rng.gaussian2D(sd: d.compensatoryScatterDeg * ppd),
-                                  at: t, primary: false)
-                lastCompensation = t
+           let c = perceived.value(at: t - d.compensatoryReaction),
+           let ePast = eyeHistory.value(at: t - d.compensatoryReaction),
+           let eBefore = eyeHistory.value(at: t - d.compensatoryReaction - 0.08),
+           (ePast - eBefore).length < 0.5 * ppd {
+            learnedOffset = learnedOffset + ((c - ePast) - learnedOffset) * d.compensatoryGain
+            let desired = targetCenter - learnedOffset
+            if (desired - fixationPoint).length > d.compensatoryMinOffset {
+                plannedSaccade = (to: desired + rng.gaussian2D(sd: d.compensatoryScatterDeg * ppd), at: t, primary: false)
             }
+            lastCompensation = t
         }
     }
 

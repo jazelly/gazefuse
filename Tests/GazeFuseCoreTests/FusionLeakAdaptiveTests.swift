@@ -77,4 +77,15 @@ final class FusionLeakAdaptiveTests: XCTestCase {
         XCTAssertGreaterThan(head.accuracyMean, 0.9)
         XCTAssertGreaterThan(head.bpsMean, gazeOnly.bpsMean + 3)
     }
+
+    /// Gaze-only operation on coarse grids (compensatory-gazing operator; EKF in gaze-only mode).
+    func testGazeOnlyCoarseGridRegressionGate() {
+        let seeds: [UInt64] = [501, 502, 503, 504]
+        let g6 = WebgridConfig(gridSize: 6), g10 = WebgridConfig(gridSize: 10)
+        let direct6 = SimSummary.run(config: .make(preset: .gazeOnly, noise: .typical, webgrid: g6), seeds: seeds)
+        let ekf10 = SimSummary.run(config: .make(preset: .gazeEKF, noise: .typical, webgrid: g10), seeds: seeds)
+        print(String(format: "gaze-only gate: gazeOnly 6×6 %.2f BPS, gazeEKF 10×10 %.2f BPS", direct6.bpsMean, ekf10.bpsMean))
+        XCTAssertGreaterThan(direct6.bpsMean, 2.0)
+        XCTAssertGreaterThan(ekf10.bpsMean, 2.5)
+    }
 }
