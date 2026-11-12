@@ -23,8 +23,11 @@ final class Engine {
     /// - takeOff: pinch-and-hold = clutch (hand motion fine-adjusts the cursor), release = left click
     ///   ("take-off" selection, Potter et al. 1988). A quick tap is simply a click on release. Default.
     /// - pressDrag: pinch = mouse down, release = mouse up (enables drag-and-drop).
-    enum PinchMode: String { case takeOff, pressDrag }
-    var pinchMode: PinchMode = .takeOff
+    /// - pressDragScroll: like pressDrag, but a pinch followed by a mostly vertical move scrolls.
+    enum PinchMode: String { case takeOff, pressDrag, pressDragScroll }
+    var pinchMode: PinchMode = .takeOff {
+        didSet { handClassifier.config.scrollEnabled = pinchMode == .pressDragScroll }
+    }
     /// Points of cursor motion per unit of normalized-image pinch motion (pinch-drag fine adjust).
     var handFineGain: Double = 900
 
@@ -131,15 +134,16 @@ final class Engine {
         if let s { recorder?.write(.hand(s)) } else { recorder?.write(.handLost(t)) }
         guard channels.hand, calibrationSink == nil else { return }
         let events = handClassifier.process(s, at: t)
-        if channels.handFineAdjust, handClassifier.isPinching, let d = handClassifier.pinchMotionDelta {
+        if channels.handFineAdjust, handClassifier.isPinching, !handClassifier.isScrolling, let d = handClassifier.pinchMotionDelta {
             // Camera image is not mirrored and Vision y points up: flip both axes to screen space.
             fusion.ingest(relativeDelta: Point2(-d.x * handFineGain, -d.y * handFineGain), at: t)
         }
         for e in events {
             if pinchMode == .takeOff, e.button == .left, e.kind == .down || e.kind == .up {
-                recorder?.write(.input(e))
                 if e.kind == .up {
                     handle(event: InputEvent(t: e.t, source: .hand, kind: .click, button: .left, confidence: e.confidence))
+                } else {
+                    recorder?.write(.input(e))
                 }
                 continue
             }

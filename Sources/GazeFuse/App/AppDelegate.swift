@@ -66,7 +66,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         ch.addItem(.separator())
         let take = item("Pinch: hold = adjust, release = click", #selector(setPinchMode(_:))); take.representedObject = "takeOff"; take.state = .on
         let drag = item("Pinch: press / drag (mouse down-up)", #selector(setPinchMode(_:))); drag.representedObject = "pressDrag"
-        ch.addItem(take); ch.addItem(drag)
+        let scr = item("Pinch: press / drag / vertical-move scroll", #selector(setPinchMode(_:))); scr.representedObject = "pressDragScroll"
+        ch.addItem(take); ch.addItem(drag); ch.addItem(scr)
         let chItem = NSMenuItem(title: "Input Channels", action: nil, keyEquivalent: ""); chItem.submenu = ch
         m.addItem(chItem)
         m.addItem(item("Show / Hide HUD   ⌃⌥H", #selector(toggleHUD)))

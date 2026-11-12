@@ -11,7 +11,7 @@ Look roughly at a target → the cursor jumps there; nudge it with a small head 
 | Channel | Sensor | Role |
 |---|---|---|
 | Eye gaze | FaceTime camera → Vision `VNDetectFaceLandmarksRequest` (pupils + head pose) → personal ridge-regression calibration | coarse pointing (saccades / "warp") |
-| Hand | camera → Vision `VNDetectHumanHandPoseRequest` → pinch classifier (hysteresis, One Euro, velocity/curl vetoes) | thumb–index = left click, thumb–middle = right click, pinch-hold + move = fine adjust (take-off click) or drag, pinch scroll |
+| Hand | camera → Vision `VNDetectHumanHandPoseRequest` → pinch classifier (hysteresis, One Euro, velocity/curl vetoes) | thumb–index = left click, thumb–middle = right click, pinch-hold + move = fine adjust (take-off click) or drag; optional pinch + vertical move = scroll |
 | Head | AirPods `CMHeadphoneMotionManager` (~25 Hz attitude/rotation rate) | fine correction (rate → cursor velocity), online gaze-bias correction |
 | Jaw | AirPods IMU micro-vibration (high-pass, RMS energy, median+MAD adaptive threshold, head-motion gate) | alternative hands-free click |
 

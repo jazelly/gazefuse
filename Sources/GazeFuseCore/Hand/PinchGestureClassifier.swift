@@ -150,6 +150,8 @@ public final class PinchGestureClassifier: HandGestureClassifying {
     /// units) while a pinch is held (drag), nil otherwise and on the onset frame.
     public private(set) var pinchMotionDelta: Point2?
     public var isPinching: Bool { phase != .idle }
+    /// True while a pinch has been resolved as a scroll gesture (scroll mode only).
+    public var isScrolling: Bool { phase == .scrolling }
     /// The button currently held / pending / scrolling, nil when idle.
     public var pinchButton: MouseButton? { phase == .idle ? nil : button }
     /// True after `openPalmMinFrames` consecutive open-palm frames (clutch / pause signal).
