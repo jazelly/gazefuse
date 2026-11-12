@@ -36,8 +36,16 @@ public final class FaceGazeExtractor {
         public var refinementMinimumWeight: Double
         /// Faces below this confidence are ignored by `extract`.
         public var minimumFaceConfidence: Double
+        /// Refinement algorithm: Timm–Barth gradient centre (default) or the dark-pixel centroid.
+        public var useTimmBarth: Bool = true
+        /// Eye patch is resampled to this width before Timm–Barth (cost ∝ width⁴).
+        public var timmBarthPatchWidth: Int = 40
+        /// A refined centre farther than this (eye widths) from Vision's landmark is rejected.
+        public var maximumRefinementShift: Double = 0.25
+        /// Skip refinement on nearly closed eyes (openness = height / width).
+        public var minimumOpennessForRefinement: Double = 0.12
 
-        public init(refinePupil: Bool = false,
+        public init(refinePupil: Bool = true,
                     refinementRadiusFraction: Double = 0.34,
                     refinementStride: Int = 2,
                     refinementMinContrast: Double = 18,
@@ -155,16 +163,19 @@ public final class FaceGazeExtractor {
         // implementation; use that method in a future image-processing module if
         // a larger CPU budget is available.
         if config.refinePupil, let pixelBuffer = pendingPixelBuffer {
-            if var eye = leftEye, let pupil = eye.pupil,
-               let refined = refinePupil(pupil, eye: eye, pixelBuffer: pixelBuffer, imageSize: imageSize) {
-                eye.pupil = refined
-                leftEye = eye
+            func refine(_ eye: EyeMetrics?) -> EyeMetrics? {
+                guard var e = eye, let pupil = e.pupil, (e.openness ?? 1) >= config.minimumOpennessForRefinement else { return eye }
+                let refined = config.useTimmBarth
+                    ? refinePupilTimmBarth(pupil, eye: e, pixelBuffer: pixelBuffer, imageSize: imageSize)
+                    : refinePupil(pupil, eye: e, pixelBuffer: pixelBuffer, imageSize: imageSize)
+                if let refined {
+                    let dx = Double(refined.x - pupil.x) * imageSize.width, dy = Double(refined.y - pupil.y) * imageSize.height
+                    if (dx * dx + dy * dy).squareRoot() <= config.maximumRefinementShift * e.widthPixels { e.pupil = refined }
+                }
+                return e
             }
-            if var eye = rightEye, let pupil = eye.pupil,
-               let refined = refinePupil(pupil, eye: eye, pixelBuffer: pixelBuffer, imageSize: imageSize) {
-                eye.pupil = refined
-                rightEye = eye
-            }
+            leftEye = refine(leftEye)
+            rightEye = refine(rightEye)
         }
 
         let leftPupil = relativePupil(leftEye, imageSize: imageSize)
@@ -422,6 +433,47 @@ public final class FaceGazeExtractor {
         guard weighted >= config.refinementMinimumWeight else { return nil }
         return CGPoint(x: weightedX / weighted / imageSize.width,
                        y: 1 - weightedY / weighted / imageSize.height)
+    }
+
+    /// Timm–Barth gradient eye-centre refinement on the Y plane (see GazeFuseCore.PupilLocator).
+    private func refinePupilTimmBarth(_ rough: CGPoint, eye: EyeMetrics, pixelBuffer: CVPixelBuffer,
+                                      imageSize: CGSize) -> CGPoint? {
+        let width = CVPixelBufferGetWidth(pixelBuffer), height = CVPixelBufferGetHeight(pixelBuffer)
+        guard width > 2, height > 2, CVPixelBufferGetPlaneCount(pixelBuffer) > 0,
+              Int(imageSize.width.rounded()) == width, Int(imageSize.height.rounded()) == height,
+              CVPixelBufferGetPixelFormatType(pixelBuffer) == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+              eye.contour.count >= 3 else { return nil }
+        // Contour bounding box in top-left pixel coordinates, padded.
+        let xs = eye.contour.map { Double($0.x) * Double(width) }
+        let ys = eye.contour.map { (1 - Double($0.y)) * Double(height) }
+        let pad = 0.12 * eye.widthPixels
+        let x0 = max(0, Int((xs.min()! - pad).rounded(.down))), x1 = min(width - 1, Int((xs.max()! + pad).rounded(.up)))
+        let y0 = max(0, Int((ys.min()! - pad).rounded(.down))), y1 = min(height - 1, Int((ys.max()! + pad).rounded(.up)))
+        let cw = x1 - x0 + 1, ch = y1 - y0 + 1
+        guard cw >= 8, ch >= 4 else { return nil }
+        CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0) else { return nil }
+        let stride = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0)
+        let px = base.assumingMemoryBound(to: UInt8.self)
+        var crop = [Double](repeating: 0, count: cw * ch)
+        for y in 0..<ch {
+            let row = px.advanced(by: (y0 + y) * stride + x0)
+            for x in 0..<cw { crop[y * cw + x] = Double(row[x]) }
+        }
+        let tw = max(12, min(config.timmBarthPatchWidth, cw))
+        let th = max(6, Int((Double(ch) * Double(tw) / Double(cw)).rounded()))
+        let patch = GrayImage(width: cw, height: ch, pixels: crop).resized(width: tw, height: th)
+        let sx = Double(cw) / Double(tw), sy = Double(ch) / Double(th)
+        var mask = [Bool](repeating: false, count: tw * th)
+        for y in 0..<th { for x in 0..<tw {
+            let srcX = Int(Double(x0) + (Double(x) + 0.5) * sx), srcY = Int(Double(y0) + (Double(y) + 0.5) * sy)
+            mask[y * tw + x] = isInsideEyeContour(x: srcX, y: srcY, eye: eye, imageSize: imageSize)
+        } }
+        guard mask.filter({ $0 }).count >= 12,
+              let r = PupilLocator.timmBarth(patch, mask: mask) else { return nil }
+        let fx = Double(x0) + (r.center.x + 0.5) * sx, fy = Double(y0) + (r.center.y + 0.5) * sy
+        return CGPoint(x: fx / Double(width), y: 1 - fy / Double(height))
     }
 
     /// Ray-casting test in normalized Vision image space.  Limiting the dark
