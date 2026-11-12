@@ -67,6 +67,14 @@ import Foundation
 public struct EKFCursorFusionConfig: Codable, Equatable {
     /// Per-sample gaze noise std (pt) at confidence 1; R = σ²/confidence.
     public var gazeSigmaPoints: Double
+    /// Innovation-based adaptive R (Mehra 1972 / Sage–Husa style): the effective gaze σ is
+    /// max(gazeSigmaPoints, σ̂) where σ̂² is a robust running estimate from in-fixation
+    /// innovations. Prevents false saccade resets when the real tracker is noisier than assumed.
+    public var adaptiveGazeNoise: Bool = true
+    /// EMA weight of the innovation-variance estimate per accepted sample.
+    public var adaptiveNoiseAlpha: Double = 0.02
+    /// Upper bound for σ̂ (pt).
+    public var adaptiveNoiseMaxSigma: Double = 120
     /// Gaze samples below this confidence are ignored (blink).
     public var minGazeConfidence: Double
     /// Without usable gaze or a fresh head sample for this long the cursor mode becomes `.idle`.
@@ -184,6 +192,12 @@ public final class EKFCursorFusion: CursorFusing {
     private var lastResetTime: TimeSec?
     private var history: FusionCursorHistory
     private var leakComp: GazeHeadLeakCompensator
+    private var innovationVar: Double = 0
+    /// Gaze σ actually used (pt): configured σ, or the adaptive estimate if larger.
+    public var effectiveGazeSigma: Double {
+        guard config.adaptiveGazeNoise else { return config.gazeSigmaPoints }
+        return min(max(config.gazeSigmaPoints, innovationVar.squareRoot()), max(config.adaptiveNoiseMaxSigma, config.gazeSigmaPoints))
+    }
     /// Current head→gaze leak estimate (pt/rad).
     public var headLeak: Point2 { leakComp.clampedLeak }
 
@@ -204,6 +218,7 @@ public final class EKFCursorFusion: CursorFusing {
         self.screen = screen
         history = FusionCursorHistory(capacity: config.historyCapacity)
         leakComp = GazeHeadLeakCompensator(config: config.leak, pointerGain: config.head.pointsPerRadian)
+        innovationVar = config.gazeSigmaPoints * config.gazeSigmaPoints
         ekf = EKFCursorFusion.initialFilter(screen: screen, config: config)
     }
 
@@ -242,6 +257,7 @@ public final class EKFCursorFusion: CursorFusing {
         pendingOutliers.removeAll(); recentInliers.removeAll()
         history.removeAll()
         leakComp = GazeHeadLeakCompensator(config: config.leak, pointerGain: config.head.pointsPerRadian)
+        innovationVar = config.gazeSigmaPoints * config.gazeSigmaPoints
         stats = Stats()
     }
 
@@ -258,7 +274,8 @@ public final class EKFCursorFusion: CursorFusing {
             predict(to: t)
         }
         let conf = min(max(gaze.confidence, 0.1), 1.0)
-        let r = cfg.gazeSigmaPoints * cfg.gazeSigmaPoints / conf
+        let sigmaG = effectiveGazeSigma
+        let r = sigmaG * sigmaG / conf
         let useLeak = cfg.head.enabled && cfg.leak.enabled
         let z = useLeak ? leakComp.compensate(gaze.point, at: t) : gaze.point
         lastGazeTime = max(lastGazeTime ?? t, t)
@@ -278,7 +295,7 @@ public final class EKFCursorFusion: CursorFusing {
         let y = z - (ref + b)
         let vs = sumVariance
         let nis1 = y.x * y.x / (vs.x + r) + y.y * y.y / (vs.y + r)
-        let clusterRadius = cfg.saccadeClusterSigmas * cfg.gazeSigmaPoints
+        let clusterRadius = cfg.saccadeClusterSigmas * sigmaG
 
         // (A) single-sample gate → outlier queue → confirmed saccade.
         if nis1 > cfg.saccadeGateNIS && y.length > cfg.saccadeMinJumpPoints {
@@ -306,6 +323,12 @@ public final class EKFCursorFusion: CursorFusing {
         clampState()
         stats.gazeAccepted += 1
         if useLeak && gaze.confidence >= cfg.saccadeMinConfidence { leakComp.learn(gaze.point, at: t) }
+        if cfg.adaptiveGazeNoise && gaze.confidence >= cfg.saccadeMinConfidence {
+            // Per-axis innovation power minus the predicted state part, scaled to confidence 1.
+            let e2 = 0.5 * (max(y.x * y.x - vs.x, 0) + max(y.y * y.y - vs.y, 0)) * conf
+            let capped = min(e2, 9 * innovationVar)   // robust: limit single-sample influence
+            innovationVar += cfg.adaptiveNoiseAlpha * (capped - innovationVar)
+        }
 
         // (B) windowed medium-shift test.
         let maxWindow = cfg.saccadeMaxWindow
